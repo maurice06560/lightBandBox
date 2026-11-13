@@ -1,0 +1,65 @@
+# JUCE framework: external repo, not vendored into this project
+JUCE/
+
+# CMake build output (generated)
+build/
+cmake-build-*/
+
+# CMake / JUCE generated files
+*_artefacts/
+*.cmake.local
+
+# Compiled objects and binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.app
+*.vst3
+*.component
+*.aaxplugin
+*.clap
+
+# Editor and IDE files
+.idea/
+*.swp
+*.swo
+*~
+.vs/
+.vscode/*
+!.vscode/tasks.json
+*.sln
+*.suo
+*.user
+*.vcxproj*
+xcuserdata/
+*.xcworkspace/xcuserdata/
+compile_commands.json
+.cache/
+.clangd/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Logs and crash dumps
+*.log
+*.dmp
+
+# Local settings and secrets
+.env
+.env.*
+*.local
