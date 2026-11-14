@@ -23,7 +23,7 @@ void MBoxApplication::loadPlaylists()
 
     selectSong ("SIR Practice with band", "Secrets");
 
-    play();
+    //play();
 }
 
 juce::StringArray MBoxApplication::getPlaylistNames() const

@@ -37,3 +37,21 @@ target_link_libraries(OneBoxBand
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# Console client for the MBoxComServer (port 5050)
+juce_add_console_app(OneBoxConsole
+    PRODUCT_NAME "OneBoxConsole")
+
+target_sources(OneBoxConsole PRIVATE
+    Sources/Console/Main.cpp)
+
+target_compile_definitions(OneBoxConsole PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0)
+
+target_link_libraries(OneBoxConsole
+    PRIVATE
+        juce::juce_core
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)

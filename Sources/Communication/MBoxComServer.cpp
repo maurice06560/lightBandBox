@@ -219,6 +219,15 @@ Message MBoxComServer::processRequest (const Message& request) const
     std::memcpy (response.methodName, request.methodName, sizeof (response.methodName));
 
     const auto methodName = readField (request.methodName, fieldLength);
+
+    juce::StringArray parameters;
+    for (const auto& parameter : request.parameters)
+        if (const auto value = readField (parameter, fieldLength); value.isNotEmpty())
+            parameters.add ("'" + value + "'");
+
+    juce::Logger::writeToLog ("MBoxComServer: request #" + juce::String (request.requestId) + " "
+                              + methodName + " (" + parameters.joinIntoString (", ") + ")");
+
     const auto it = m_handlers.find (methodName);
 
     const auto results = it != m_handlers.end() ? it->second (request)
