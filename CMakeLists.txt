@@ -19,7 +19,8 @@ target_sources(OneBoxBand PRIVATE
     Sources/Model/MBoxPlaylist.cpp
     Sources/Model/MBoxSong.cpp
     Sources/Model/MBoxClipStreamer.cpp
-    Sources/Persistence/MBoxStore.cpp)
+    Sources/Persistence/MBoxStore.cpp
+    Sources/Communication/MBoxComServer.cpp)
 
 target_compile_definitions(OneBoxBand PRIVATE
     JUCE_WEB_BROWSER=0

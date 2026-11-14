@@ -1,5 +1,6 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "Communication/MBoxComServer.h"
 #include "Model/MBoxApplication.h"
 
 class OneBoxBandApplication final : public juce::JUCEApplication
@@ -16,12 +17,14 @@ public:
         const auto audioFolder = getAudioFolder();
         m_application = std::make_unique<MBoxApplication> (audioFolder);
         m_application->loadPlaylists();
+        m_comServer = std::make_unique<MBoxComServer> (*m_application);
 
         //m_application->play();
     }
 
     void shutdown() override
     {
+        m_comServer.reset();
         m_application.reset();
     }
 
@@ -47,6 +50,7 @@ private:
     }
 
     std::unique_ptr<MBoxApplication> m_application;
+    std::unique_ptr<MBoxComServer> m_comServer;
 };
 
 START_JUCE_APPLICATION (OneBoxBandApplication)
