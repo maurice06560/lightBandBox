@@ -15,6 +15,13 @@
 //==============================================================================
 namespace
 {
+    // Formats a position as bar.beat.division.tick, e.g. 1.4.1.42
+    juce::String barToString (const Bar& bar)
+    {
+        return juce::String (bar.bar) + "." + juce::String (bar.beat) + "."
+             + juce::String (bar.division) + "." + juce::String (bar.tick);
+    }
+
     // The setup the engine opens the default device with, plus the channel counts to request.
     struct PreferredDeviceSetup
     {
@@ -123,6 +130,10 @@ void MBoxAudioEngine::selectSong(const juce::String& playlistName, const MBoxSon
     m_state.store(AudioState::loading, std::memory_order_release);
     m_song = song;
 
+    juce::Logger::writeToLog ("MBoxAudioEngine: [Select song]: '" + m_song->getName() + "' from playlist '" + playlistName
+                              + "', start " + barToString (m_song->getSongStartPosition())
+                              + ", end " + barToString (m_song->getSongEndPosition()));
+
     // Everything slow (opening files, walking the grids) is done into locals without the lock,
     // which is only taken for the swap at the end.
     ClipList clips;
@@ -133,6 +144,9 @@ void MBoxAudioEngine::selectSong(const juce::String& playlistName, const MBoxSon
 
         // Only audio tracks have a file to read
         if (const auto* audioTrack = dynamic_cast<const MBoxAudioTrack*> (track)) {
+
+            juce::Logger::writeToLog ("MBoxAudioEngine: [Select song]:   audio track starts at "
+                                      + barToString (audioTrack->getStartAudio()) + ", file '" + audioTrack->getFileName() + "'");
 
             const auto file = mediaFolder.getChildFile (audioTrack->getFileName());
             std::unique_ptr<juce::AudioFormatReader> reader (m_formatManager.createReaderFor (file));
@@ -364,8 +378,8 @@ void MBoxAudioEngine::audioDeviceIOCallbackWithContext (const float* const* inpu
         const auto numChannelsToCopy = juce::jmin (numRoutedChannels, numInputChannels, numOutputChannels);
 
         for (int channel = 0; channel < numChannelsToCopy; ++channel)
-            if (inputChannelData[channel] != nullptr && outputChannelData[channel] != nullptr)
-                juce::FloatVectorOperations::copy (outputChannelData[channel] + offset, inputChannelData[channel] + offset, segment);
+           if (inputChannelData[channel] != nullptr && outputChannelData[channel] != nullptr)
+               juce::FloatVectorOperations::copy (outputChannelData[channel] + offset, inputChannelData[channel] + offset, segment);
 
         // Mix the clips on top of the input: each clip adds [offset, offset + segment)
         for (auto& clip : m_clips)

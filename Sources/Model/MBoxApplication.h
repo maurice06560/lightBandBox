@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Audio/MBoxAudioEngine.h"
+#include "../Persistence/MBoxStore.h"
 #include "MBoxPlaylist.h"
 
 #include <juce_core/juce_core.h>
@@ -11,8 +12,12 @@
 class MBoxApplication final
 {
 public:
-    explicit MBoxApplication (const juce::File& audioFolder) : m_audioEngine (audioFolder) {}
+    explicit MBoxApplication (const juce::File& audioFolder) : m_audioEngine (audioFolder), m_store (audioFolder) {}
     ~MBoxApplication() = default;
+
+    /** Loads all the playlists from the audio folder and selects the first song of the first playlist.
+        Call once at startup: it replaces the playlists, so a previously selected song would be destroyed. */
+    void loadPlaylists();
 
     void selectSong(const juce::String& playlistName, const juce::String& song);
 
@@ -35,10 +40,11 @@ public:
 
     // Test
     /** Fills the model with a test playlist, song and audio track. */
-    void testApplication();
+    //void testApplication();
 
 private:
     MBoxAudioEngine m_audioEngine;
+    MBoxStore m_store;
     std::vector<std::unique_ptr<MBoxPlaylist>> m_playlists;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MBoxApplication)

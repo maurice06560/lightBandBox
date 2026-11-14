@@ -33,6 +33,11 @@ void MBoxSong::addAudioTrack (const Bar& startAudio, const juce::File& audioFile
         m_songEndPosition = audioEnd;
 }
 
+void MBoxSong::addPhysicalTrack (int physicalInput)
+{
+    m_tracks.push_back (std::make_unique<MBoxPhysicalTrack> (physicalInput));
+}
+
 //==============================================================================
 // Position conversions
 //==============================================================================

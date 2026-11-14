@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MBoxTrack.h"
+#include "MBoxPhysicalTrack.h"
 #include "MBoxCommonStructures.h"
 
 #include <juce_core/juce_core.h>
@@ -37,6 +38,9 @@ public:
     /** Adds an audio track that plays audioFile starting at startAudio. The track keeps the file name only.
         If the file ends after the song end position, the song end position moves to the end of the file. */
     void addAudioTrack (const Bar& startAudio, const juce::File& audioFile);
+
+    /** Adds a track fed by the given physical input. */
+    void addPhysicalTrack (int physicalInput);
 
     /** Sets the tempo (in BPM) from the given position. Replaces any tempo already at that position. */
     void addTempo(const Bar& bar, int tempo);

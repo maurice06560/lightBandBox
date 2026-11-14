@@ -2,6 +2,30 @@
 
 #include <algorithm>
 
+void MBoxApplication::loadPlaylists()
+{
+    m_playlists = m_store.loadPlaylists();
+
+    if (m_playlists.empty())
+    {
+        juce::Logger::writeToLog ("MBoxApplication: no playlists loaded");
+        return;
+    }
+
+    // const auto& firstPlaylist = *m_playlists.front();
+    // const auto songs = firstPlaylist.getSongs();
+
+    // if (songs.isEmpty())
+    // {
+    //     juce::Logger::writeToLog ("MBoxApplication: first playlist '" + firstPlaylist.getName() + "' has no songs");
+    //     return;
+    // }
+
+    selectSong ("SIR Practice with band", "Secrets");
+
+    play();
+}
+
 juce::StringArray MBoxApplication::getPlaylistNames() const
 {
     juce::StringArray names;
@@ -82,22 +106,22 @@ void MBoxApplication::stop()
     m_audioEngine.stop();
 }
 
-// =================================================================================
-void MBoxApplication::testApplication()
-{
-    const juce::String playlistName ("SIR Practice with band");
-    const juce::String songName ("Secrets");
+// // =================================================================================
+// void MBoxApplication::testApplication()
+// {
+//     const juce::String playlistName ("SIR Practice with band");
+//     const juce::String songName ("Secrets");
 
-    addPlaylist (playlistName);
-    addSong (playlistName, songName);
+//     addPlaylist (playlistName);
+//     addSong (playlistName, songName);
 
-    if (auto* song = getSong (playlistName, songName)) {
-        const auto mediaFolder = m_audioEngine.getMediaFolder (playlistName, songName);
-        song->addAudioTrack (Bar { 1, 1, 1, 0 }, mediaFolder.getChildFile ("Secrets - synth - 44100.wav"));
-        song->setSongStartPosition(Bar{1,1,1,0});
-        //song->setSongEndPosition(Bar{8,1,1,0});
-    }
-    selectSong(playlistName, songName);
+//     if (auto* song = getSong (playlistName, songName)) {
+//         const auto mediaFolder = m_audioEngine.getMediaFolder (playlistName, songName);
+//         song->addAudioTrack (Bar { 1, 1, 1, 0 }, mediaFolder.getChildFile ("Secrets - synth - 44100.wav"));
+//         song->setSongStartPosition(Bar{1,1,1,0});
+//         //song->setSongEndPosition(Bar{8,1,1,0});
+//     }
+//     selectSong(playlistName, songName);
 
-    play();
-}
+//     play();
+// }

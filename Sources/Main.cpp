@@ -15,9 +15,9 @@ public:
     {
         const auto audioFolder = getAudioFolder();
         m_application = std::make_unique<MBoxApplication> (audioFolder);
+        m_application->loadPlaylists();
 
-        // TO DELETE TEST
-        //m_application->testApplication();
+        //m_application->play();
     }
 
     void shutdown() override
