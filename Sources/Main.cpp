@@ -13,10 +13,11 @@ public:
 
     void initialise (const juce::String&) override
     {
-        m_application = std::make_unique<MBoxApplication>();
+        const auto audioFolder = getAudioFolder();
+        m_application = std::make_unique<MBoxApplication> (audioFolder);
 
         // TO DELETE TEST
-        m_application->testApplication();
+        //m_application->testApplication();
     }
 
     void shutdown() override
@@ -34,6 +35,17 @@ public:
     }
 
 private:
+    /** Returns $LIGHTBOX_DIR if it is set, otherwise the default "/Users/mmarin/OneBox/". */
+    static juce::File getAudioFolder()
+    {
+        const auto lightboxDir = juce::SystemStats::getEnvironmentVariable ("LIGHTBOX_DIR", {});
+
+        if (lightboxDir.isNotEmpty())
+            return juce::File (lightboxDir);
+
+        return juce::File ("/Users/mmarin/OneBox/");
+    }
+
     std::unique_ptr<MBoxApplication> m_application;
 };
 

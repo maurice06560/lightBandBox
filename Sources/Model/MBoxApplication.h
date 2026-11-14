@@ -11,7 +11,7 @@
 class MBoxApplication final
 {
 public:
-    MBoxApplication() = default;
+    explicit MBoxApplication (const juce::File& audioFolder) : m_audioEngine (audioFolder) {}
     ~MBoxApplication() = default;
 
     void selectSong(const juce::String& playlistName, const juce::String& song);

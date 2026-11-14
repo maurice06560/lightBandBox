@@ -254,7 +254,8 @@ void MBoxAudioEngine::stop()
 //==============================================================================
 // MBoxAudioEngine contructor: Initilize device manager
 //==============================================================================
-MBoxAudioEngine::MBoxAudioEngine()
+MBoxAudioEngine::MBoxAudioEngine (const juce::File& audioFolder)
+    : m_audioFolder (audioFolder)
 {
     // Only support WAV files
     // Start the TimeSliceThread

@@ -19,7 +19,8 @@ enum class AudioState
 class MBoxAudioEngine final : private juce::AudioIODeviceCallback
 {
 public:
-    MBoxAudioEngine();
+    /** audioFolder: root folder that holds the playlists (<audioFolder>/playlists/...). */
+    explicit MBoxAudioEngine (const juce::File& audioFolder);
     ~MBoxAudioEngine() override;
 
     /** Prepares the engine to play the given song from the given playlist. */
@@ -106,8 +107,7 @@ private:
     // Audio file reader
     // =============================================================================
     juce::AudioFormatManager m_formatManager;   // To configure the supported audio files 
-    // TO DO: Need to implement the playlist,song and track classes to define the full path
-    juce::File m_audioFolder{"/Users/mmarin/OneBox/"};
+    const juce::File m_audioFolder;             // Root folder of the playlists, set at construction
     juce::TimeSliceThread m_readAheadThread{"MBox read-ahead"};
 
     const MBoxSong* m_song = nullptr;
