@@ -127,12 +127,7 @@ void MBoxAudioEngine::selectSong(const juce::String& playlistName, const MBoxSon
     // which is only taken for the swap at the end.
     ClipList clips;
 
-    // <m_audioFolder>/playlists/<playlistName>/songs/<songName>/media/
-    const auto mediaFolder = m_audioFolder.getChildFile ("playlists")
-                                          .getChildFile (playlistName)
-                                          .getChildFile ("songs")
-                                          .getChildFile (m_song->getName())
-                                          .getChildFile ("tracks/media");
+    const auto mediaFolder = getMediaFolder (playlistName, m_song->getName());
 
     for (auto* track : m_song->getTracks()) {
 
@@ -158,6 +153,7 @@ void MBoxAudioEngine::selectSong(const juce::String& playlistName, const MBoxSon
     // Convert the tempo changes to ticks once, so the audio callback doesn't walk the bar grids.
     // A tempo of 0 or less would divide by zero in the callback, so such changes are dropped.
     std::vector<std::pair<double, int>> tempoTicks;
+    std::vector<double> tempoSeconds;
 
     for (const auto& [position, bpm] : m_song->getTempoGrid())
     {
@@ -167,7 +163,13 @@ void MBoxAudioEngine::selectSong(const juce::String& playlistName, const MBoxSon
             continue;
         }
 
-        tempoTicks.emplace_back ((double) convertBarToTick (position), bpm);
+        const auto tick = (double) convertBarToTick (position);
+
+        // Seconds at this change: the previous change's seconds plus the time spent at the previous tempo
+        tempoSeconds.push_back (tempoTicks.empty() ? convertTickToSeconds (tick)
+                                                   : tempoSeconds.back() + (tick - tempoTicks.back().first) * 60.0
+                                                                               / ((double) tempoTicks.back().second * Bar::ticksPerBeat));
+        tempoTicks.emplace_back (tick, bpm);
     }
 
     // The locators start on the song's start and end positions, and the playhead on the left locator
@@ -180,13 +182,33 @@ void MBoxAudioEngine::selectSong(const juce::String& playlistName, const MBoxSon
         // The previous song's clips and tempos end up in the locals, so they are freed after the lock is released
         std::swap (m_clips, clips);
         std::swap (m_tempoTicks, tempoTicks);
+        std::swap (m_tempoSeconds, tempoSeconds);
 
         m_leftLocator.store (leftLocator, std::memory_order_release);
         m_rightLocator.store (rightLocator, std::memory_order_release);
         m_playhead.store (static_cast<double> (leftLocator), std::memory_order_release);
     }
 
+    // The previous song's clips must leave the read-ahead thread before they are destroyed (this waits
+    // for a slice in progress), and the new ones start streaming as soon as the callback seeks them.
+    for (auto& clip : clips)
+        m_readAheadThread.removeTimeSliceClient (clip.get());
+
+    clips.clear();
+
+    for (auto& clip : m_clips)
+        m_readAheadThread.addTimeSliceClient (clip.get());
+
     m_state.store(AudioState::stopped, std::memory_order_release);
+}
+
+juce::File MBoxAudioEngine::getMediaFolder (const juce::String& playlistName, const juce::String& songName) const
+{
+    return m_audioFolder.getChildFile ("playlists")
+                        .getChildFile (playlistName)
+                        .getChildFile ("songs")
+                        .getChildFile (songName)
+                        .getChildFile ("tracks/media");
 }
 
 //==============================================================================
@@ -292,8 +314,20 @@ void MBoxAudioEngine::audioDeviceIOCallbackWithContext (const float* const* inpu
     // m_clipsLock is only held while a new song is being selected: output silence for this block
     const juce::SpinLock::ScopedTryLockType lock (m_clipsLock);
 
-    if (! lock.isLocked() || m_state.load (std::memory_order_relaxed) != AudioState::playing)
+    if (! lock.isLocked())
         return;
+
+    const auto state = m_state.load (std::memory_order_relaxed);
+
+    if (state == AudioState::loading)
+        return;
+
+    // Stopped or paused: keep the clips cued on the playhead, so they are ready the moment play starts
+    if (state != AudioState::playing)
+    {
+        seekClips (m_playhead.load (std::memory_order_relaxed));
+        return;
+    }
 
     // Work on a local copy of the playhead and publish it once at the end of the block (see below)
     const auto blockStartPlayhead = m_playhead.load (std::memory_order_relaxed);
@@ -301,6 +335,10 @@ void MBoxAudioEngine::audioDeviceIOCallbackWithContext (const float* const* inpu
     auto playhead                 = blockStartPlayhead;
     auto reachedEnd               = false;
     int offset                    = 0;
+
+    // The playhead only jumps between blocks (stop, end of song, song load, rate change), never
+    // inside one, so the clips only need to be checked once, here
+    seekClips (blockStartPlayhead);
 
     // The block is split into segments that each have a single tempo: a segment ends at the next
     // tempo change, at the right locator, or at the end of the block, whichever comes first.
@@ -328,7 +366,10 @@ void MBoxAudioEngine::audioDeviceIOCallbackWithContext (const float* const* inpu
             if (inputChannelData[channel] != nullptr && outputChannelData[channel] != nullptr)
                 juce::FloatVectorOperations::copy (outputChannelData[channel] + offset, inputChannelData[channel] + offset, segment);
 
-        //renderClips (outputChannelData, numOutputChannels, offset, segment);   // writes [offset, offset + segment)
+        // Mix the clips on top of the input: each clip adds [offset, offset + segment)
+        for (auto& clip : m_clips)
+            clip->addTo (outputChannelData, numOutputChannels, offset, segment);
+
         playhead += segment * ticksPerSample;
         offset   += segment;
 
@@ -368,72 +409,14 @@ std::int64_t MBoxAudioEngine::convertBarToTick (const Bar& bar) const
 {
     jassert (m_song != nullptr);
 
-    if (m_song == nullptr)
-        return 0;
-
-    const auto& signatures = m_song->getSignatureGrid();
-
-    // The grid always starts with a signature at bar 1, so it is never empty
-    jassert (! signatures.empty() && bar.bar >= 1);
-
-    std::int64_t ticks = 0;
-
-    for (size_t i = 0; i < signatures.size(); ++i)
-    {
-        const auto ticksPerBar = (std::int64_t) signatures[i].second.numerator * Bar::ticksPerBeat;
-        const auto startBar    = signatures[i].first.bar;
-        const auto isLast      = i + 1 == signatures.size();
-
-        // This signature lasts until the bar where the next one starts
-        if (isLast || bar.bar < signatures[i + 1].first.bar)
-        {
-            ticks += (std::int64_t) (bar.bar - startBar) * ticksPerBar;
-            break;
-        }
-
-        ticks += (std::int64_t) (signatures[i + 1].first.bar - startBar) * ticksPerBar;
-    }
-
-    // Position inside the bar
-    return ticks
-         + (std::int64_t) (bar.beat - 1) * Bar::ticksPerBeat
-         + (std::int64_t) (bar.division - 1) * Bar::ticksPerDivision
-         + bar.tick;
+    return m_song != nullptr ? m_song->convertBarToTick (bar) : 0;
 }
 
 double MBoxAudioEngine::convertTickToSeconds (double ticks) const
 {
     jassert (m_song != nullptr);
 
-    if (m_song == nullptr)
-        return 0.0;
-
-    const auto& tempos = m_song->getTempoGrid();
-
-    // The grid always starts with a tempo at {1,1,1,0}, so it is never empty
-    jassert (! tempos.empty());
-
-    double seconds = 0.0;
-
-    for (size_t i = 0; i < tempos.size(); ++i)
-    {
-        const auto secondsPerTick = 60.0 / ((double) tempos[i].second * Bar::ticksPerBeat);
-        const auto startTick      = (double) convertBarToTick (tempos[i].first);
-        const auto isLast         = i + 1 == tempos.size();
-
-        // This tempo lasts until the tick where the next one starts
-        if (isLast)
-            return seconds + (ticks - startTick) * secondsPerTick;
-
-        const auto endTick = (double) convertBarToTick (tempos[i + 1].first);
-
-        if (ticks < endTick)
-            return seconds + (ticks - startTick) * secondsPerTick;
-
-        seconds += (endTick - startTick) * secondsPerTick;
-    }
-
-    return seconds;
+    return m_song != nullptr ? m_song->convertTickToSeconds (ticks) : 0.0;
 }
 
 int MBoxAudioEngine::getTempoForTick (double tick) const
@@ -456,4 +439,29 @@ double MBoxAudioEngine::getNextTempoChangeTick (double tick) const
                                       [] (double t, const auto& change) { return t < change.first; });
 
     return it == m_tempoTicks.end() ? std::numeric_limits<double>::infinity() : it->first;
+}
+
+double MBoxAudioEngine::getSecondsForTick (double tick) const
+{
+    // Empty until a song is selected
+    if (m_tempoTicks.empty())
+        return 0.0;
+
+    const auto it = std::upper_bound (m_tempoTicks.begin(), m_tempoTicks.end(), tick,
+                                      [] (double t, const auto& change) { return t < change.first; });
+
+    // A tick before the first change uses the song's first tempo, counted from that change
+    const auto index = (size_t) (it == m_tempoTicks.begin() ? 0 : std::distance (m_tempoTicks.begin(), it) - 1);
+    const auto& [changeTick, bpm] = m_tempoTicks[index];
+
+    return m_tempoSeconds[index] + (tick - changeTick) * 60.0 / ((double) bpm * Bar::ticksPerBeat);
+}
+
+void MBoxAudioEngine::seekClips (double tick)
+{
+    const auto songSample = (std::int64_t) std::llround (getSecondsForTick (tick) * m_sampleRate);
+
+    for (auto& clip : m_clips)
+        if (clip->needsSeek (songSample, m_sampleRate))
+            clip->seek (songSample, m_sampleRate);
 }

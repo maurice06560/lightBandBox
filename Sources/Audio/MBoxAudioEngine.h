@@ -25,6 +25,10 @@ public:
     /** Prepares the engine to play the given song from the given playlist. */
     void selectSong(const juce::String& playlistName, const MBoxSong* song);
 
+    /** Returns the folder that holds the audio files of the given song:
+        <audio folder>/playlists/<playlistName>/songs/<songName>/tracks/media */
+    juce::File getMediaFolder (const juce::String& playlistName, const juce::String& songName) const;
+
     // =============================================================================
     // Transport
     // =============================================================================
@@ -52,14 +56,11 @@ private:
     void writeAudioEngineSetupToLogs();
 
     /** Converts a position in the selected song to an absolute tick count from the start of the song ({1,1,1,0} is tick 0).
-        A beat is always Bar::ticksPerBeat (960) ticks, and each bar holds as many beats as the numerator
-        of the signature in effect, so the song's signature grid is walked bar by bar.
-        Signature changes are applied from the start of the bar they are set in. Returns 0 if no song is selected. */
+        See MBoxSong::convertBarToTick. Returns 0 if no song is selected. */
     std::int64_t convertBarToTick(const Bar& bar) const;
 
     /** Converts an absolute tick count from the start of the selected song (tick 0 is 0 seconds) to seconds.
-        Each beat (Bar::ticksPerBeat ticks) lasts 60 / tempo seconds, with the tempo taken from the song's
-        tempo grid, so tempo changes before the given tick are taken into account. Returns 0 if no song is selected. */
+        See MBoxSong::convertTickToSeconds. Returns 0 if no song is selected. */
     double convertTickToSeconds(double ticks) const;
 
     /** Returns the tempo (in BPM) in effect at the given tick of the selected song: the last tempo change at or
@@ -70,6 +71,14 @@ private:
     /** Returns the tick of the first tempo change strictly after the given tick, or +infinity if there is none.
         Same data and thread safety as getTempoForTick. */
     double getNextTempoChangeTick(double tick) const;
+
+    /** Returns the song time in seconds at the given tick of the selected song. Same data and thread safety as
+        getTempoForTick (m_tempoTicks and m_tempoSeconds), so it is safe to call from the audio callback. */
+    double getSecondsForTick(double tick) const;
+
+    /** Moves every clip whose stream is not at the given tick, so the read-ahead thread refills it. Audio thread,
+        with m_clipsLock held. */
+    void seekClips(double tick);
 
     // =============================================================================
     // Variables
@@ -87,6 +96,8 @@ private:
     // The selected song's tempo changes as (tick, BPM), sorted by tick. Built in selectSong under m_clipsLock,
     // so the audio callback (which only reads it while holding that lock) never sees it half-written.
     std::vector<std::pair<double, int>> m_tempoTicks;
+    // Song time in seconds at each entry of m_tempoTicks, built and guarded the same way.
+    std::vector<double> m_tempoSeconds;
 
     ClipList m_clips;
     juce::SpinLock m_clipsLock;

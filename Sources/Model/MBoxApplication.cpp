@@ -92,9 +92,10 @@ void MBoxApplication::testApplication()
     addSong (playlistName, songName);
 
     if (auto* song = getSong (playlistName, songName)) {
-        song->addAudioTrack (Bar { 1, 1, 1, 0 }, "Secrets - synth - 44100.wav");
+        const auto mediaFolder = m_audioEngine.getMediaFolder (playlistName, songName);
+        song->addAudioTrack (Bar { 1, 1, 1, 0 }, mediaFolder.getChildFile ("Secrets - synth - 44100.wav"));
         song->setSongStartPosition(Bar{1,1,1,0});
-        song->setSongEndPosition(Bar{8,1,1,0});
+        //song->setSongEndPosition(Bar{8,1,1,0});
     }
     selectSong(playlistName, songName);
 

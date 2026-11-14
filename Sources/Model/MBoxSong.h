@@ -34,8 +34,9 @@ public:
     void setSongStartPosition (const Bar& position) { m_songStartPosition = position; }
     void setSongEndPosition (const Bar& position) { m_songEndPosition = position; }
 
-    /** Adds an audio track that plays fileName starting at startAudio. */
-    void addAudioTrack (const Bar& startAudio, const juce::String& fileName);
+    /** Adds an audio track that plays audioFile starting at startAudio. The track keeps the file name only.
+        If the file ends after the song end position, the song end position moves to the end of the file. */
+    void addAudioTrack (const Bar& startAudio, const juce::File& audioFile);
 
     /** Sets the tempo (in BPM) from the given position. Replaces any tempo already at that position. */
     void addTempo(const Bar& bar, int tempo);
@@ -45,6 +46,23 @@ public:
     /** Returns the tempo (in BPM) in effect at the given position: the last tempo set at or before it. */
     int getTempoForBar(const Bar& bar) const;
     //Signature getSignatureForBar(const Bar bar);
+
+    // =============================================================================
+    // Position conversions
+    // =============================================================================
+    /** Converts a position to an absolute tick count from the start of the song ({1,1,1,0} is tick 0).
+        A beat is always Bar::ticksPerBeat (960) ticks, and each bar holds as many beats as the numerator
+        of the signature in effect. Signature changes apply from the start of the bar they are set in. */
+    std::int64_t convertBarToTick (const Bar& bar) const;
+
+    /** Converts an absolute tick count to a position. The inverse of convertBarToTick. Negative ticks give {1,1,1,0}. */
+    Bar convertTickToBar (std::int64_t ticks) const;
+
+    /** Converts an absolute tick count to seconds from the start of the song, following the tempo grid. */
+    double convertTickToSeconds (double ticks) const;
+
+    /** Converts seconds from the start of the song to an absolute (fractional) tick count. The inverse of convertTickToSeconds. */
+    double convertSecondsToTick (double seconds) const;
 private:
     juce::String m_name;
     std::vector<std::unique_ptr<MBoxTrack>> m_tracks;
