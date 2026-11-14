@@ -14,6 +14,9 @@ public:
     void initialise (const juce::String&) override
     {
         m_application = std::make_unique<MBoxApplication>();
+
+        // TO DELETE TEST
+        m_application->testApplication();
     }
 
     void shutdown() override

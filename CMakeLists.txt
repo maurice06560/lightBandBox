@@ -15,7 +15,10 @@ juce_add_gui_app(OneBoxBand
 target_sources(OneBoxBand PRIVATE
     Sources/Main.cpp
     Sources/Audio/MBoxAudioEngine.cpp
-    Sources/Model/MBoxApplication.cpp)
+    Sources/Model/MBoxApplication.cpp
+    Sources/Model/MBoxPlaylist.cpp
+    Sources/Model/MBoxSong.cpp
+    Sources/Model/MBoxClipStreamer.cpp)
 
 target_compile_definitions(OneBoxBand PRIVATE
     JUCE_WEB_BROWSER=0
@@ -26,6 +29,7 @@ target_compile_definitions(OneBoxBand PRIVATE
 target_link_libraries(OneBoxBand
     PRIVATE
         juce::juce_audio_devices
+        juce::juce_audio_formats
         juce::juce_gui_basics
     PUBLIC
         juce::juce_recommended_config_flags
