@@ -1,222 +1,427 @@
 #include "MBoxSong.h"
-#include "MBoxAudioTrack.h"
-
-#include <juce_audio_formats/juce_audio_formats.h>
+#include "../Audio/MBoxAudioClipCache.h"
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 
-void MBoxSong::addAudioTrack (const Bar& startAudio, const juce::File& audioFile)
+//==============================================================================
+// Construction: a new song is 4/4 at defaultTempo, defaultTotalBar bars long
+//==============================================================================
+MBoxSong::MBoxSong (const juce::String& name)
+    : m_name (name),
+      m_tempoGrid { { Bar {}, defaultTempo } },
+      m_signatureGrid { { Bar {}, Signature {} } }
 {
-    m_tracks.push_back (std::make_unique<MBoxAudioTrack> (startAudio, audioFile.getFileName()));
-
-    // Read the file's header for its length
-    juce::AudioFormatManager formatManager;
-    formatManager.registerBasicFormats();
-
-    const std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (audioFile));
-
-    if (reader == nullptr || reader->sampleRate <= 0.0)
-    {
-        juce::Logger::writeToLog ("MBoxSong: cannot read the length of audio file: " + audioFile.getFullPathName());
-        return;
-    }
-
-    const auto lengthSeconds = (double) reader->lengthInSamples / reader->sampleRate;
-
-    // Round up, so the end position covers the last sample of the file
-    const auto startSeconds = convertTickToSeconds ((double) convertBarToTick (startAudio));
-    const auto endTick      = (std::int64_t) std::ceil (convertSecondsToTick (startSeconds + lengthSeconds));
-    const auto audioEnd     = convertTickToBar (endTick);
-
-    if (audioEnd > m_songEndPosition)
-        m_songEndPosition = audioEnd;
 }
 
-void MBoxSong::addPhysicalTrack (int physicalInput)
+MBoxSong::MBoxSong (const MBoxSong& other)
+    : m_name (other.m_name),
+      m_tempoGrid (other.m_tempoGrid),
+      m_signatureGrid (other.m_signatureGrid),
+      m_totalNbOfBars (other.m_totalNbOfBars),
+      m_leftLocator (other.m_leftLocator),
+      m_rightLocator (other.m_rightLocator),
+      m_endSongAction (other.m_endSongAction),
+      m_endStopDelay (other.m_endStopDelay),
+      m_metronomeState (other.m_metronomeState),
+      m_mixes (other.m_mixes)
 {
-    m_tracks.push_back (std::make_unique<MBoxPhysicalTrack> (physicalInput));
+    for (const auto& track : other.m_tracks)
+        m_tracks.push_back (track->clone());
+}
+
+juce::String MBoxSong::getName() const  { return m_name; }
+
+//==============================================================================
+// Length
+//==============================================================================
+void MBoxSong::setTotalBar (const int bar)
+{
+    // The right locator must stay inside the song
+    m_totalNbOfBars = juce::jmax (1, bar, m_rightLocator.m_bar);
+}
+
+int MBoxSong::getTotalBar() const  { return m_totalNbOfBars; }
+
+void MBoxSong::setEndSongDelay (int seconds) noexcept
+{
+    m_endStopDelay = juce::jlimit (0, maxEndSongDelaySeconds, seconds);
 }
 
 //==============================================================================
-// Position conversions
+// Tempo and signature grids
 //==============================================================================
-std::int64_t MBoxSong::convertBarToTick (const Bar& bar) const
+juce::Result MBoxSong::addTempo (const std::pair<Bar, int>& tempo)
 {
-    // The grid always starts with a signature at bar 1, so it is never empty
-    jassert (! m_signatureGrid.empty() && bar.bar >= 1);
+    if (tempo.second < minTempo || tempo.second > maxTempo)
+        return juce::Result::fail ("Tempo must be between " + juce::String (minTempo) + " and " + juce::String (maxTempo) + " BPM");
 
-    std::int64_t ticks = 0;
+    if (! getTimeline().isValidPosition (tempo.first))
+        return juce::Result::fail ("Invalid position " + juce::String (tempo.first.toString()));
 
-    for (size_t i = 0; i < m_signatureGrid.size(); ++i)
-    {
-        const auto ticksPerBar = (std::int64_t) m_signatureGrid[i].second.numerator * Bar::ticksPerBeat;
-        const auto startBar    = m_signatureGrid[i].first.bar;
-        const auto isLast      = i + 1 == m_signatureGrid.size();
+    auto it = std::find_if (m_tempoGrid.begin(), m_tempoGrid.end(), [&] (const auto& entry) { return entry.first == tempo.first; });
 
-        // This signature lasts until the bar where the next one starts
-        if (isLast || bar.bar < m_signatureGrid[i + 1].first.bar)
-        {
-            ticks += (std::int64_t) (bar.bar - startBar) * ticksPerBar;
-            break;
-        }
+    if (it != m_tempoGrid.end())
+        it->second = tempo.second;
+    else
+        m_tempoGrid.push_back (tempo);
 
-        ticks += (std::int64_t) (m_signatureGrid[i + 1].first.bar - startBar) * ticksPerBar;
-    }
-
-    // Position inside the bar
-    return ticks
-         + (std::int64_t) (bar.beat - 1) * Bar::ticksPerBeat
-         + (std::int64_t) (bar.division - 1) * Bar::ticksPerDivision
-         + bar.tick;
+    sortAndCompleteGrids();
+    extendRightLocatorToAudio();
+    return juce::Result::ok();
 }
 
-Bar MBoxSong::convertTickToBar (std::int64_t ticks) const
+juce::Result MBoxSong::removeTempo (const Bar& tempo)
 {
-    jassert (! m_signatureGrid.empty());
+    if (tempo == Bar {})
+        return juce::Result::fail ("The tempo at bar 1 can't be removed");
 
-    ticks = std::max<std::int64_t> (0, ticks);
+    auto it = std::find_if (m_tempoGrid.begin(), m_tempoGrid.end(), [&] (const auto& entry) { return entry.first == tempo; });
 
-    std::int64_t segmentStart = 0;      // Tick where signature i starts
+    if (it == m_tempoGrid.end())
+        return juce::Result::fail ("No tempo change at " + juce::String (tempo.toString()));
 
-    for (size_t i = 0; i < m_signatureGrid.size(); ++i)
+    m_tempoGrid.erase (it);
+    extendRightLocatorToAudio();
+    return juce::Result::ok();
+}
+
+juce::Result MBoxSong::addSignature (const std::pair<Bar, Signature>& signature)
+{
+    if (! signature.second.isValid())
+        return juce::Result::fail ("Invalid time signature (denominators can be 2, 4, 8 or 16)");
+
+    if (signature.first.m_bar < 1 || ! signature.first.isStartOfBar())
+        return juce::Result::fail ("A time signature can only change at the start of a bar");
+
+    auto it = std::find_if (m_signatureGrid.begin(), m_signatureGrid.end(),
+                            [&] (const auto& entry) { return entry.first.m_bar == signature.first.m_bar; });
+
+    if (it != m_signatureGrid.end())
+        it->second = signature.second;
+    else
+        m_signatureGrid.push_back (signature);
+
+    sortAndCompleteGrids();
+    clampPositionsToSignatures();
+    extendRightLocatorToAudio();
+    return juce::Result::ok();
+}
+
+juce::Result MBoxSong::removeSignature (const Bar& signature)
+{
+    if (signature.m_bar == 1)
+        return juce::Result::fail ("The time signature at bar 1 can't be removed");
+
+    auto it = std::find_if (m_signatureGrid.begin(), m_signatureGrid.end(),
+                            [&] (const auto& entry) { return entry.first.m_bar == signature.m_bar; });
+
+    if (it == m_signatureGrid.end())
+        return juce::Result::fail ("No time signature change at bar " + juce::String (signature.m_bar));
+
+    m_signatureGrid.erase (it);
+    clampPositionsToSignatures();
+    extendRightLocatorToAudio();
+    return juce::Result::ok();
+}
+
+MBoxTimeline MBoxSong::getTimeline() const
+{
+    return MBoxTimeline (m_tempoGrid, m_signatureGrid);
+}
+
+void MBoxSong::sortAndCompleteGrids()
+{
+    if (std::none_of (m_tempoGrid.begin(), m_tempoGrid.end(), [] (const auto& entry) { return entry.first == Bar {}; }))
+        m_tempoGrid.push_back ({ Bar {}, m_tempoGrid.empty() ? defaultTempo : m_tempoGrid.front().second });
+
+    if (std::none_of (m_signatureGrid.begin(), m_signatureGrid.end(), [] (const auto& entry) { return entry.first.m_bar == 1; }))
+        m_signatureGrid.push_back ({ Bar {}, Signature {} });
+
+    std::sort (m_tempoGrid.begin(), m_tempoGrid.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+    std::sort (m_signatureGrid.begin(), m_signatureGrid.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
+}
+
+//==============================================================================
+// After a signature change, a position such as beat 4 of a bar that is now 3/4 no longer
+// exists. Such positions are moved to the last valid beat and division of their bar.
+//==============================================================================
+Bar MBoxSong::clampPosition (const MBoxTimeline& timeline, Bar position) const
+{
+    const auto signature = timeline.getSignatureAtBar (position.m_bar);
+    position.m_bar      = juce::jmax (1, position.m_bar);
+    position.m_beat     = juce::jlimit (1, signature.m_numerator, position.m_beat);
+    position.m_division = juce::jlimit (1, signature.divisionsPerBeatUnit(), position.m_division);
+    position.m_tick     = juce::jlimit (0, ticksPerDivision - 1, position.m_tick);
+    return position;
+}
+
+void MBoxSong::clampPositionsToSignatures()
+{
+    const auto timeline = getTimeline();
+
+    for (auto& entry : m_tempoGrid)
+        entry.first = clampPosition (timeline, entry.first);
+
+    // Clamping can make two tempo entries land on the same position: keep the later one
+    std::map<std::int64_t, std::pair<Bar, int>> uniqueTempos;
+
+    for (const auto& entry : m_tempoGrid)
+        uniqueTempos[timeline.barToTicks (entry.first)] = entry;
+
+    m_tempoGrid.clear();
+
+    for (const auto& [ticks, entry] : uniqueTempos)
+        m_tempoGrid.push_back (entry);
+
+    m_leftLocator = clampPosition (timeline, m_leftLocator);
+    m_rightLocator = clampPosition (timeline, m_rightLocator);
+
+    for (auto& track : m_tracks)
     {
-        const auto ticksPerBar = (std::int64_t) m_signatureGrid[i].second.numerator * Bar::ticksPerBeat;
-        const auto startBar    = m_signatureGrid[i].first.bar;
+        if (auto* audio = dynamic_cast<MBoxAudioTrack*> (track.get()))
+            audio->setAudioStart (clampPosition (timeline, audio->getAudioStart()));
+        else if (auto* physical = dynamic_cast<MBoxPhysicalTrack*> (track.get()))
+            for (auto& change : physical->m_bankSlots)
+                change.first = clampPosition (timeline, change.first);
+        else if (auto* info = dynamic_cast<MBoxInfoTrack*> (track.get()))
+            for (auto& click : info->m_infoClicks)
+                click = clampPosition (timeline, click);
+    }
+}
 
-        if (i + 1 < m_signatureGrid.size())
+//==============================================================================
+// Locators
+//==============================================================================
+juce::Result MBoxSong::setLeftLocator (const Bar& position)
+{
+    if (! getTimeline().isValidPosition (position))
+        return juce::Result::fail ("Invalid position " + juce::String (position.toString()));
+
+    if (position >= m_rightLocator)
+        return juce::Result::fail ("The left locator must be before the right locator");
+
+    m_leftLocator = position;
+    return juce::Result::ok();
+}
+
+juce::Result MBoxSong::setRightLocator (const Bar& position)
+{
+    if (! getTimeline().isValidPosition (position))
+        return juce::Result::fail ("Invalid position " + juce::String (position.toString()));
+
+    if (position <= m_leftLocator)
+        return juce::Result::fail ("The right locator must be after the left locator");
+
+    m_rightLocator = position;
+    m_totalNbOfBars = juce::jmax (m_totalNbOfBars, position.m_bar);
+    return juce::Result::ok();
+}
+
+void MBoxSong::extendRightLocatorToAudio()
+{
+    const auto timeline = getTimeline();
+    std::int64_t furthestEndTicks = timeline.barToTicks (m_rightLocator);
+
+    for (const auto& track : m_tracks)
+    {
+        const auto* audio = dynamic_cast<const MBoxAudioTrack*> (track.get());
+
+        if (audio == nullptr || audio->getLengthInFrames() <= 0)
+            continue;
+
+        // The end of the WAV, rounded up to the next tick so the whole file is inside the song
+        const auto endFrame = timeline.barToFrames (audio->getAudioStart()) + audio->getLengthInFrames();
+        const auto endTicks = (std::int64_t) std::ceil (timeline.framesToTicks (endFrame) - 1.0e-6);
+        furthestEndTicks = juce::jmax (furthestEndTicks, endTicks);
+    }
+
+    const auto furthestEnd = timeline.ticksToBar (furthestEndTicks);
+
+    if (furthestEnd > m_rightLocator)
+    {
+        m_rightLocator = furthestEnd;
+        m_totalNbOfBars = juce::jmax (m_totalNbOfBars, furthestEnd.m_bar);
+    }
+}
+
+//==============================================================================
+// Tracks
+//==============================================================================
+juce::Result MBoxSong::addTrack (std::unique_ptr<MBoxTrack> track, int* newId)
+{
+    if (track == nullptr)
+        return juce::Result::fail ("No track given");
+
+    if ((int) m_tracks.size() >= maxNumberOfTrackPerSong)
+        return juce::Result::fail ("A song can have at most " + juce::String (maxNumberOfTrackPerSong) + " tracks");
+
+    int nextId = 1;
+
+    for (const auto& existing : m_tracks)
+        nextId = juce::jmax (nextId, existing->getId() + 1);
+
+    track->m_id = nextId;
+
+    if (newId != nullptr)
+        *newId = nextId;
+
+    m_tracks.push_back (std::move (track));
+    ensureMixesMatchTracks();
+    extendRightLocatorToAudio();
+    return juce::Result::ok();
+}
+
+juce::Result MBoxSong::removeTrack (int trackId)
+{
+    auto it = std::find_if (m_tracks.begin(), m_tracks.end(), [&] (const auto& track) { return track->getId() == trackId; });
+
+    if (it == m_tracks.end())
+        return juce::Result::fail ("No track " + juce::String (trackId));
+
+    m_tracks.erase (it);
+    ensureMixesMatchTracks();
+    return juce::Result::ok();
+}
+
+MBoxTrack* MBoxSong::getTrack (int trackId) const
+{
+    for (const auto& track : m_tracks)
+        if (track->getId() == trackId)
+            return track.get();
+
+    return nullptr;
+}
+
+juce::Result MBoxSong::setAudioFile (int trackId, const juce::File& file)
+{
+    auto* audio = dynamic_cast<MBoxAudioTrack*> (getTrack (trackId));
+
+    if (audio == nullptr)
+        return juce::Result::fail ("No audio track " + juce::String (trackId));
+
+    std::int64_t lengthInFrames = 0;
+    const auto result = readSupportedWavLength (file, lengthInFrames);
+
+    if (result.failed())
+        return result;
+
+    audio->setFilename (file, lengthInFrames);
+    extendRightLocatorToAudio();
+    return juce::Result::ok();
+}
+
+juce::Result MBoxSong::setAudioStart (int trackId, const Bar& position)
+{
+    auto* audio = dynamic_cast<MBoxAudioTrack*> (getTrack (trackId));
+
+    if (audio == nullptr)
+        return juce::Result::fail ("No audio track " + juce::String (trackId));
+
+    if (! getTimeline().isValidPosition (position))
+        return juce::Result::fail ("Invalid position " + juce::String (position.toString()));
+
+    audio->setAudioStart (position);
+    extendRightLocatorToAudio();
+    return juce::Result::ok();
+}
+
+//==============================================================================
+// Mixes
+//==============================================================================
+void MBoxSong::ensureMixesMatchTracks()
+{
+    for (auto& mix : m_mixes)
+    {
+        std::vector<MBoxTrackMix> matched;
+
+        for (const auto& track : m_tracks)
         {
-            const auto nextStart = segmentStart + (std::int64_t) (m_signatureGrid[i + 1].first.bar - startBar) * ticksPerBar;
+            auto it = std::find_if (mix.begin(), mix.end(), [&] (const auto& trackMix) { return trackMix.m_trackId == track->getId(); });
 
-            if (ticks >= nextStart)
+            if (it != mix.end())
+                matched.push_back (std::move (*it));
+            else
             {
-                segmentStart = nextStart;
-                continue;
+                MBoxTrackMix trackMix;
+                trackMix.m_trackId = track->getId();
+                matched.push_back (std::move (trackMix));
             }
         }
 
-        const auto relative = ticks - segmentStart;
-        const auto inBar    = relative % ticksPerBar;
-        const auto inBeat   = inBar % Bar::ticksPerBeat;
-
-        return { startBar + (int) (relative / ticksPerBar),
-                 (int) (inBar / Bar::ticksPerBeat) + 1,
-                 (int) (inBeat / Bar::ticksPerDivision) + 1,
-                 (int) (inBeat % Bar::ticksPerDivision) };
-    }
-
-    return {};
-}
-
-double MBoxSong::convertTickToSeconds (double ticks) const
-{
-    // The grid always starts with a tempo at {1,1,1,0}, so it is never empty
-    jassert (! m_tempoGrid.empty());
-
-    double seconds = 0.0;
-
-    for (size_t i = 0; i < m_tempoGrid.size(); ++i)
-    {
-        const auto secondsPerTick = 60.0 / ((double) m_tempoGrid[i].second * Bar::ticksPerBeat);
-        const auto startTick      = (double) convertBarToTick (m_tempoGrid[i].first);
-
-        // This tempo lasts until the tick where the next one starts
-        if (i + 1 == m_tempoGrid.size())
-            return seconds + (ticks - startTick) * secondsPerTick;
-
-        const auto endTick = (double) convertBarToTick (m_tempoGrid[i + 1].first);
-
-        if (ticks < endTick)
-            return seconds + (ticks - startTick) * secondsPerTick;
-
-        seconds += (endTick - startTick) * secondsPerTick;
-    }
-
-    return seconds;
-}
-
-double MBoxSong::convertSecondsToTick (double seconds) const
-{
-    jassert (! m_tempoGrid.empty());
-
-    double segmentStartSeconds = 0.0;
-
-    for (size_t i = 0; i < m_tempoGrid.size(); ++i)
-    {
-        const auto secondsPerTick = 60.0 / ((double) m_tempoGrid[i].second * Bar::ticksPerBeat);
-        const auto startTick      = (double) convertBarToTick (m_tempoGrid[i].first);
-
-        if (i + 1 == m_tempoGrid.size())
-            return startTick + (seconds - segmentStartSeconds) / secondsPerTick;
-
-        const auto endTick         = (double) convertBarToTick (m_tempoGrid[i + 1].first);
-        const auto segmentSeconds  = (endTick - startTick) * secondsPerTick;
-
-        if (seconds < segmentStartSeconds + segmentSeconds)
-            return startTick + (seconds - segmentStartSeconds) / secondsPerTick;
-
-        segmentStartSeconds += segmentSeconds;
-    }
-
-    return 0.0;
-}
-
-std::vector<MBoxTrack*> MBoxSong::getTracks() const
-{
-    std::vector<MBoxTrack*> tracks;
-    tracks.reserve (m_tracks.size());
-
-    for (const auto& track : m_tracks)
-        tracks.push_back (track.get());
-
-    return tracks;
-}
-
-namespace
-{
-    // Inserts value at bar in a grid kept sorted by position, or replaces the value already at that position.
-    template <typename Value>
-    void setGridValue (std::vector<std::pair<Bar, Value>>& grid, const Bar& bar, const Value& value)
-    {
-        const auto it = std::lower_bound (grid.begin(), grid.end(), bar,
-                                          [] (const auto& entry, const Bar& position) { return entry.first < position; });
-
-        if (it != grid.end() && it->first == bar)
-            it->second = value;
-        else
-            grid.insert (it, { bar, value });
+        mix = std::move (matched);
     }
 }
 
-void MBoxSong::addTempo (const Bar& bar, int tempo)
+MBoxTrackMix* MBoxSong::getTrackMix (int bus, int trackId)
 {
-    jassert (tempo > 0);
+    if (bus < 1 || bus > numberOfMixBus)
+        return nullptr;
 
-    if (tempo <= 0)
-        return;
+    for (auto& trackMix : m_mixes[(size_t) bus - 1])
+        if (trackMix.m_trackId == trackId)
+            return &trackMix;
 
-    setGridValue (m_tempoGrid, bar, tempo);
+    return nullptr;
 }
 
-void MBoxSong::addSignature (const Bar& bar, const Signature& signature)
+const MBoxTrackMix* MBoxSong::getTrackMix (int bus, int trackId) const
 {
-    jassert (signature.isValid());
-
-    if (! signature.isValid())
-        return;
-
-    setGridValue (m_signatureGrid, bar, signature);
+    return const_cast<MBoxSong*> (this)->getTrackMix (bus, trackId);
 }
 
-int MBoxSong::getTempoForBar (const Bar& bar) const
+const std::vector<MBoxTrackMix>& MBoxSong::getMix (int bus) const
 {
-    // The grid always starts with a tempo at {1,1,1,0}, so it is never empty
-    jassert (! m_tempoGrid.empty());
+    jassert (bus >= 1 && bus <= numberOfMixBus);
+    return m_mixes[(size_t) juce::jlimit (1, numberOfMixBus, bus) - 1];
+}
 
-    // First entry strictly after bar; the one before it is the tempo in effect at bar
-    const auto it = std::upper_bound (m_tempoGrid.begin(), m_tempoGrid.end(), bar,
-                                      [] (const Bar& position, const auto& entry) { return position < entry.first; });
+std::vector<MBoxTrackMix>& MBoxSong::getMix (int bus)
+{
+    jassert (bus >= 1 && bus <= numberOfMixBus);
+    return m_mixes[(size_t) juce::jlimit (1, numberOfMixBus, bus) - 1];
+}
 
-    // A position before the first entry uses the song's initial tempo
-    return it == m_tempoGrid.begin() ? it->second : std::prev (it)->second;
+//==============================================================================
+// Loading from storage
+//==============================================================================
+void MBoxSong::setGridsForStorage (std::vector<std::pair<Bar, int>> tempoGrid, std::vector<std::pair<Bar, Signature>> signatureGrid)
+{
+    m_tempoGrid = std::move (tempoGrid);
+    m_signatureGrid = std::move (signatureGrid);
+}
+
+void MBoxSong::addTrackForStorage (std::unique_ptr<MBoxTrack> track)
+{
+    m_tracks.push_back (std::move (track));
+}
+
+juce::Result MBoxSong::validateAfterLoad()
+{
+    for (const auto& [position, bpm] : m_tempoGrid)
+        if (bpm < minTempo || bpm > maxTempo)
+            return juce::Result::fail ("Song " + m_name + ": invalid tempo " + juce::String (bpm) + " at " + juce::String (position.toString()));
+
+    for (const auto& [position, signature] : m_signatureGrid)
+        if (! signature.isValid() || ! position.isStartOfBar())
+            return juce::Result::fail ("Song " + m_name + ": invalid time signature at " + juce::String (position.toString()));
+
+    if ((int) m_tracks.size() > maxNumberOfTrackPerSong)
+        return juce::Result::fail ("Song " + m_name + ": more than " + juce::String (maxNumberOfTrackPerSong) + " tracks");
+
+    for (size_t i = 0; i < m_tracks.size(); ++i)
+        for (size_t j = i + 1; j < m_tracks.size(); ++j)
+            if (m_tracks[i]->getId() == m_tracks[j]->getId())
+                return juce::Result::fail ("Song " + m_name + ": two tracks have the id " + juce::String (m_tracks[i]->getId()));
+
+    sortAndCompleteGrids();
+    clampPositionsToSignatures();
+
+    if (m_leftLocator >= m_rightLocator)
+        return juce::Result::fail ("Song " + m_name + ": the left locator must be before the right locator");
+
+    m_totalNbOfBars = juce::jmax (m_totalNbOfBars, m_rightLocator.m_bar);
+    ensureMixesMatchTracks();
+    return juce::Result::ok();
 }

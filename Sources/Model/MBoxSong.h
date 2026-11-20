@@ -1,79 +1,137 @@
 #pragma once
 
+#include "MBoxTimeline.h"
 #include "MBoxTrack.h"
-#include "MBoxPhysicalTrack.h"
-#include "MBoxCommonStructures.h"
 
-#include <juce_core/juce_core.h>
+#include <array>
 
-#include <cstdint>
-#include <memory>
-#include <vector>
+//==============================================================================
+// How one track sounds in one mix bus, for one song. Volume is in dB (0.0 is unity gain,
+// minVolumeDb or below is silent), balance goes from -1.0 (left) to +1.0 (right).
+// Solos add up: when any track of a bus is soloed, only the soloed tracks of that bus play.
+//==============================================================================
+struct MBoxTrackMix
+{
+    int m_trackId { 1 };
+    double m_volume { 0.0 };
+    double m_balance { 0.0 };
+    bool m_mute { false };
+    bool m_solo { false };
+    std::vector<MBoxEffect> m_inserts;
+};
 
-using tempoGrid = std::vector<std::pair<Bar, int>>;
-using signatureGrid = std::vector<std::pair<Bar, Signature>>;
-
-class MBoxSong final
+//==============================================================================
+// A song: its tempo and signature grids, locators, tracks and per-bus mixes.
+//
+// Invariants kept by the methods:
+// - The grids always have an entry at bar 1 and are sorted. Signatures only change at the
+//   start of a bar.
+// - Every position (grid entries, locators, audio starts, slot changes, info clicks) is valid
+//   for the signature of its bar. After a signature change, out-of-range beats and divisions
+//   are clamped to the last valid one.
+// - m_leftLocator < m_rightLocator, and m_rightLocator.m_bar <= m_totalNbOfBars.
+// - When the end of a WAV moves after m_rightLocator, m_rightLocator moves to that end (it
+//   never moves earlier on its own).
+// - Every bus has exactly one MBoxTrackMix per track, in track order.
+//==============================================================================
+class MBoxSong
 {
 public:
-    MBoxSong() = default;
-    explicit MBoxSong (const juce::String& name) : m_name (name) {}
-    ~MBoxSong() = default;
+    explicit MBoxSong (const juce::String& name);
 
-    const juce::String& getName() const { return m_name; }
-    /** Returns the song's tracks. The song keeps ownership, so the pointers stay valid only while the song and its tracks exist. */
-    std::vector<MBoxTrack*> getTracks() const;
-    /** Returns the tempo changes, sorted by position. */
-    const tempoGrid& getTempoGrid() const { return m_tempoGrid; }
-    /** Returns the time signature changes, sorted by position. */
-    const signatureGrid& getSignatureGrid() const { return m_signatureGrid; }
-    /** Returns the position where the song starts. */
-    const Bar& getSongStartPosition() const { return m_songStartPosition; }
-    /** Returns the position where the song ends. */
-    const Bar& getSongEndPosition() const { return m_songEndPosition; }
+    // Deep copy, used to give the loader threads a snapshot they can read while the original is edited
+    MBoxSong (const MBoxSong& other);
+    MBoxSong& operator= (const MBoxSong&) = delete;
 
-    void setSongStartPosition (const Bar& position) { m_songStartPosition = position; }
-    void setSongEndPosition (const Bar& position) { m_songEndPosition = position; }
+    juce::String getName() const;
 
-    /** Adds an audio track that plays audioFile starting at startAudio. The track keeps the file name only.
-        If the file ends after the song end position, the song end position moves to the end of the file. */
-    void addAudioTrack (const Bar& startAudio, const juce::File& audioFile);
+    void setTotalBar (const int bar);
+    int getTotalBar() const;
 
-    /** Adds a track fed by the given physical input. */
-    void addPhysicalTrack (int physicalInput);
+    // Adds or replaces the tempo at a position. Fails for a tempo outside minTempo..maxTempo
+    // or an invalid position.
+    juce::Result addTempo (const std::pair<Bar, int>& tempo);
+    // Fails for the entry at bar 1, which every song needs
+    juce::Result removeTempo (const Bar& tempo);
+    const std::vector<std::pair<Bar, int>>& getTempoGrid() const noexcept  { return m_tempoGrid; }
 
-    /** Sets the tempo (in BPM) from the given position. Replaces any tempo already at that position. */
-    void addTempo(const Bar& bar, int tempo);
-    /** Sets the time signature from the given position. Replaces any signature already at that position. */
-    void addSignature(const Bar& bar, const Signature& signature);
+    // Adds or replaces the signature at a bar. The position must be the start of a bar.
+    juce::Result addSignature (const std::pair<Bar, Signature>& signature);
+    // Fails for the entry at bar 1, which every song needs
+    juce::Result removeSignature (const Bar& signature);
+    const std::vector<std::pair<Bar, Signature>>& getSignatureGrid() const noexcept  { return m_signatureGrid; }
 
-    /** Returns the tempo (in BPM) in effect at the given position: the last tempo set at or before it. */
-    int getTempoForBar(const Bar& bar) const;
-    //Signature getSignatureForBar(const Bar bar);
+    // A timeline built from the current grids
+    MBoxTimeline getTimeline() const;
 
-    // =============================================================================
-    // Position conversions
-    // =============================================================================
-    /** Converts a position to an absolute tick count from the start of the song ({1,1,1,0} is tick 0).
-        A beat is always Bar::ticksPerBeat (960) ticks, and each bar holds as many beats as the numerator
-        of the signature in effect. Signature changes apply from the start of the bar they are set in. */
-    std::int64_t convertBarToTick (const Bar& bar) const;
+    juce::Result setLeftLocator (const Bar& position);
+    juce::Result setRightLocator (const Bar& position);
+    Bar getLeftLocator() const noexcept   { return m_leftLocator; }
+    Bar getRightLocator() const noexcept  { return m_rightLocator; }
 
-    /** Converts an absolute tick count to a position. The inverse of convertBarToTick. Negative ticks give {1,1,1,0}. */
-    Bar convertTickToBar (std::int64_t ticks) const;
+    void setEndSongAction (EndSongAction action) noexcept  { m_endSongAction = action; }
+    EndSongAction getEndSongAction() const noexcept       { return m_endSongAction; }
 
-    /** Converts an absolute tick count to seconds from the start of the song, following the tempo grid. */
-    double convertTickToSeconds (double ticks) const;
+    // Seconds of silence after the right locator before the next song (and its count-in), 0 to 30
+    void setEndSongDelay (int seconds) noexcept;
+    int getEndSongDelay() const noexcept  { return m_endStopDelay; }
 
-    /** Converts seconds from the start of the song to an absolute (fractional) tick count. The inverse of convertTickToSeconds. */
-    double convertSecondsToTick (double seconds) const;
+    void setMetronomeState (MetronomeState state) noexcept  { m_metronomeState = state; }
+    MetronomeState getMetronomeState() const noexcept       { return m_metronomeState; }
+
+    //==========================================================================
+    // Tracks
+
+    // Adds a track, giving it the next free id (returned through newId), and adds its default
+    // mix to every bus. Fails when the song already has maxNumberOfTrackPerSong tracks.
+    juce::Result addTrack (std::unique_ptr<MBoxTrack> track, int* newId = nullptr);
+    juce::Result removeTrack (int trackId);
+    MBoxTrack* getTrack (int trackId) const;
+    const std::vector<std::unique_ptr<MBoxTrack>>& getTracks() const noexcept  { return m_tracks; }
+
+    // Sets an audio track's file, reading its length from the WAV header. Fails, leaving the
+    // track unchanged, when the file isn't a 44100 Hz, 16-bit stereo WAV.
+    juce::Result setAudioFile (int trackId, const juce::File& file);
+    juce::Result setAudioStart (int trackId, const Bar& position);
+
+    // Moves the right locator (and the bar count) to the end of the furthest WAV when that end
+    // is after the right locator. Called after every change that can move a WAV's end.
+    void extendRightLocatorToAudio();
+
+    //==========================================================================
+    // Mixes. Bus numbers are 1-based.
+
+    MBoxTrackMix* getTrackMix (int bus, int trackId);
+    const MBoxTrackMix* getTrackMix (int bus, int trackId) const;
+    const std::vector<MBoxTrackMix>& getMix (int bus) const;
+    std::vector<MBoxTrackMix>& getMix (int bus);
+
+    //==========================================================================
+    // Loading from storage: these skip the checks that need a complete song and are only
+    // used by MBoxStorage, which calls validateAfterLoad() at the end.
+    void setNameForStorage (const juce::String& name)  { m_name = name; }
+    void setGridsForStorage (std::vector<std::pair<Bar, int>> tempoGrid, std::vector<std::pair<Bar, Signature>> signatureGrid);
+    void setLocatorsForStorage (const Bar& left, const Bar& right)  { m_leftLocator = left; m_rightLocator = right; }
+    void addTrackForStorage (std::unique_ptr<MBoxTrack> track);
+    juce::Result validateAfterLoad();
+
 private:
+    friend class MBoxPlaylist;  // renames
+
+    void sortAndCompleteGrids();
+    void clampPositionsToSignatures();
+    Bar clampPosition (const MBoxTimeline& timeline, Bar position) const;
+    void ensureMixesMatchTracks();
+
     juce::String m_name;
+    std::vector<std::pair<Bar, int>> m_tempoGrid;
+    std::vector<std::pair<Bar, Signature>> m_signatureGrid;
+    int m_totalNbOfBars { defaultTotalBar };
+    Bar m_leftLocator { 1, 1, 1, 0 };
+    Bar m_rightLocator { defaultTotalBar, 1, 1, 0 };
     std::vector<std::unique_ptr<MBoxTrack>> m_tracks;
-
-    tempoGrid m_tempoGrid { { {1,1,1,0}, 120 } };
-    signatureGrid m_signatureGrid { { {1,1,1,0}, {4, 4} } };
-
-    Bar m_songStartPosition{1,1,1,0};
-    Bar m_songEndPosition{1,1,1,0};
+    EndSongAction m_endSongAction { EndSongAction::Stop };
+    int m_endStopDelay { 0 };
+    MetronomeState m_metronomeState { MetronomeState::Off };
+    std::array<std::vector<MBoxTrackMix>, numberOfMixBus> m_mixes;
 };
