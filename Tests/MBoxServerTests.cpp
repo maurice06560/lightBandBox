@@ -73,6 +73,43 @@ private:
         expectEquals ((int) request ("{\"id\":8,\"method\":\"selectSong\",\"params\":{\"playlist\":\"x\",\"song\":\"y\"}}")["error"]["code"],
                       (int) MBoxComAPI::rejected);
         expect (request ("{\"id\":9,\"method\":\"getPlaylists\"}")["result"]["playlists"].isArray());
+
+        beginTest ("Protocol: getPlaylistNames, renamePlaylist, renameSong");
+
+        expect (core.addPlaylist ("RenameMe").wasOk());
+        expect (core.addSong ("RenameMe", "OldSong").wasOk());
+        expect (core.addPlaylist ("Taken").wasOk());
+
+        auto contains = [] (const juce::var& names, const juce::String& name)
+        {
+            if (auto* array = names.getArray())
+                return array->contains (name);
+
+            return false;
+        };
+
+        expect (contains (request ("{\"id\":10,\"method\":\"getPlaylistNames\"}")["result"]["playlists"], "RenameMe"));
+
+        expectEquals ((int) request ("{\"id\":11,\"method\":\"renamePlaylist\",\"params\":{\"playlist\":\"RenameMe\"}}")["error"]["code"],
+                      (int) MBoxComAPI::badParameters);
+        expectEquals ((int) request ("{\"id\":12,\"method\":\"renamePlaylist\",\"params\":{\"playlist\":\"RenameMe\",\"newName\":\"Taken\"}}")["error"]["code"],
+                      (int) MBoxComAPI::rejected);
+        expect (request ("{\"id\":13,\"method\":\"renamePlaylist\",\"params\":{\"playlist\":\"RenameMe\",\"newName\":\"Renamed\"}}").hasProperty ("result"));
+
+        const auto names = request ("{\"id\":14,\"method\":\"getPlaylistNames\"}")["result"]["playlists"];
+        expect (contains (names, "Renamed"));
+        expect (! contains (names, "RenameMe"));
+
+        expectEquals ((int) request ("{\"id\":15,\"method\":\"renameSong\",\"params\":{\"playlist\":\"Renamed\",\"song\":\"OldSong\"}}")["error"]["code"],
+                      (int) MBoxComAPI::badParameters);
+        expect (request ("{\"id\":16,\"method\":\"renameSong\",\"params\":{\"playlist\":\"Renamed\",\"song\":\"OldSong\",\"newName\":\"NewSong\"}}").hasProperty ("result"));
+        expect (contains (request ("{\"id\":17,\"method\":\"getSongs\",\"params\":{\"playlist\":\"Renamed\"}}")["result"]["songs"], "NewSong"));
+        expectEquals ((int) request ("{\"id\":18,\"method\":\"renameSong\",\"params\":{\"playlist\":\"Renamed\",\"song\":\"Missing\",\"newName\":\"X\"}}")["error"]["code"],
+                      (int) MBoxComAPI::rejected);
+
+        // Leave the data as the following tests expect it
+        expect (core.removePlaylist ("Renamed").wasOk());
+        expect (core.removePlaylist ("Taken").wasOk());
     }
 
     void testPlayback (MBoxCoreAudio& core, const juce::File& dataDirectory)

@@ -41,8 +41,14 @@ namespace MBoxComAPI
         constexpr const char* getState = "getState";
         // result: playlists: [string]
         constexpr const char* getPlaylists = "getPlaylists";
+        // result: playlists: [string] (same as getPlaylists, named after MBoxCoreAudio::getPlaylistNames)
+        constexpr const char* getPlaylistNames = "getPlaylistNames";
         // params: playlist. result: songs: [string]
         constexpr const char* getSongs = "getSongs";
+        // params: playlist, newName. Fails (rejected) if newName is invalid or already used
+        constexpr const char* renamePlaylist = "renamePlaylist";
+        // params: playlist, song, newName. Fails (rejected) if newName is invalid or already used
+        constexpr const char* renameSong = "renameSong";
         // params: playlist, song. Loading continues with playlistLoading/playlistLoaded events
         constexpr const char* selectSong = "selectSong";
         constexpr const char* play = "play";

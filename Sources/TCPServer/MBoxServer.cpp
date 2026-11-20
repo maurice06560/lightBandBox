@@ -410,7 +410,7 @@ namespace
             return Outcome::ok (result);
         }
 
-        if (method == M::getPlaylists)
+        if (method == M::getPlaylists || method == M::getPlaylistNames)
         {
             auto result = makeObject();
             set (result, "playlists", namesToJson (core.getPlaylistNames()));
@@ -437,6 +437,27 @@ namespace
                 return badParameters ("playlist and song");
 
             return Outcome::from (core.selectSong (playlist, song));
+        }
+
+        if (method == M::renamePlaylist)
+        {
+            std::string playlist, newName;
+
+            if (! getString (params, "playlist", playlist) || ! getString (params, "newName", newName))
+                return badParameters ("playlist and newName");
+
+            return Outcome::from (core.renamePlaylist (playlist, newName));
+        }
+
+        if (method == M::renameSong)
+        {
+            std::string playlist, song, newName;
+
+            if (! getString (params, "playlist", playlist) || ! getString (params, "song", song)
+                || ! getString (params, "newName", newName))
+                return badParameters ("playlist, song and newName");
+
+            return Outcome::from (core.renameSong (playlist, song, newName));
         }
 
         if (method == M::play)   return Outcome::from (core.play());

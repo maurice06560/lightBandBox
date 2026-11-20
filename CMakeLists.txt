@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(MBOX_BUILD_TESTS "Build the MBoxCoreTests unit test runner" ON)
+option(MBOX_BUILD_RACK "Build the headless Rack application (links the MBoxCore shared library)" ON)
 set(MBOX_ASIO_SDK_DIR "" CACHE PATH "Windows only: the Steinberg ASIO SDK folder (the one containing common/iasiodrv.h)")
 
 add_subdirectory(JUCE)
@@ -140,4 +141,11 @@ if(MBOX_BUILD_TESTS)
             juce::juce_recommended_warning_flags)
 
     add_test(NAME MBoxCoreTests COMMAND MBoxCoreTests)
+endif()
+
+#===============================================================================
+# Applications
+#===============================================================================
+if(MBOX_BUILD_RACK)
+    add_subdirectory(Applications/Rack)
 endif()
