@@ -41,7 +41,7 @@ Threads: the **message thread** (the thread that created `MBoxCoreAudio`) runs t
 
 ### Design references
 
-- `Docs/DataModel.md`: the data model copied from the Lucidchart diagram, every design decision taken since, and where the code differs from the diagram.
+- `Docs/DataModel.md`: the data model as implemented (model classes, invariants, storage layout, the runtime players built from it, transport rules). Keep it in sync when the model changes.
 - `Docs/ImplementationPlan.md`: the phased plan and its status.
 - The design document (`OneBox-Full-designV1.docx`, kept outside the repo) defines the timing model: 960 PPQ, positions as `{bar, beat-unit, division, tick}`, and an authoritative `int64` sample-frame transport.
 
