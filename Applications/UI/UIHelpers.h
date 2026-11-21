@@ -171,7 +171,7 @@ namespace UIHelpers
     inline void ask (const juce::String& title, const juce::String& message, const juce::StringArray& buttons,
                      std::function<void (int)> onDone)
     {
-        auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
+        auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::NoIcon)
                                                 .withTitle (title)
                                                 .withMessage (message);
 

@@ -811,6 +811,29 @@ void LookAndFeel::drawTableHeaderColumn (Graphics& g, TableHeaderComponent& head
 }
 
 //==============================================================================
+void LookAndFeel::drawAlertBox (Graphics& g, AlertWindow& alert, const Rectangle<int>&, TextLayout& textLayout)
+{
+    const auto bounds = alert.getLocalBounds().toFloat();
+    drawBackground (g, bounds);
+
+    g.setColour (palette.panelBorder);
+    g.drawRect (bounds, 1.0f);
+
+    // A thin stripe on the left says what kind of message it is
+    const auto stripe = alert.getAlertType() == MessageBoxIconType::WarningIcon ? palette.accentWarm : palette.accent;
+    g.setColour (stripe);
+    g.fillRect (bounds.withWidth (3.0f).reduced (0.0f, 1.0f).withX (1.0f));
+
+    g.setColour (alert.findColour (AlertWindow::textColourId));
+    textLayout.draw (g, Rectangle<float> (bounds.getX() + 4.0f, 30.0f, bounds.getWidth(),
+                                          bounds.getHeight() - (float) getAlertWindowButtonHeight() - 20.0f));
+}
+
+Font LookAndFeel::getAlertWindowTitleFont()     { return makeFont (17.0f, true); }
+Font LookAndFeel::getAlertWindowMessageFont()   { return makeFont (14.0f); }
+Font LookAndFeel::getAlertWindowFont()          { return makeFont (13.0f); }
+
+//==============================================================================
 void LookAndFeel::drawDocumentWindowTitleBar (DocumentWindow& window, Graphics& g, int width, int height,
                                               int titleSpaceX, int titleSpaceW, const Image* icon,
                                               bool drawTitleTextOnLeft)

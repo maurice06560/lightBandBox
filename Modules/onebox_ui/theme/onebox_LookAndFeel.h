@@ -83,6 +83,14 @@ public:
                                 int columnId, int width, int height, bool isMouseOver,
                                 bool isMouseDown, int columnFlags) override;
 
+    // Alert windows: the panel background with an accent stripe (coral for warnings) instead of
+    // a large icon, and the theme's fonts
+    void drawAlertBox (juce::Graphics&, juce::AlertWindow&, const juce::Rectangle<int>& textArea, juce::TextLayout&) override;
+    int getAlertWindowButtonHeight() override  { return 32; }
+    juce::Font getAlertWindowTitleFont() override;
+    juce::Font getAlertWindowMessageFont() override;
+    juce::Font getAlertWindowFont() override;
+
     // Windows
     void drawDocumentWindowTitleBar (juce::DocumentWindow&, juce::Graphics&, int width, int height,
                                      int titleSpaceX, int titleSpaceW, const juce::Image* icon,

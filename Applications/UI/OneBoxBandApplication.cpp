@@ -23,6 +23,9 @@ void OneBoxBandApplication::initialise (const juce::String& commandLine)
 
     m_snapshotBanks = arguments.contains ("--banks");
 
+    // Everything without a look and feel of its own (alert windows, popups) uses the OneBox theme
+    juce::LookAndFeel::setDefaultLookAndFeel (&onebox::ui::LookAndFeel::getShared());
+
     m_splash = std::make_unique<StartupSplash> (getApplicationVersion());
     m_splash->show();
     m_splash->setStep ("Loading the data folder and opening the audio device...", 0.2);
@@ -135,6 +138,8 @@ void OneBoxBandApplication::shutdown()
         m_core->save();
         m_core.reset();
     }
+
+    juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
 }
 
 //==============================================================================
