@@ -3,7 +3,7 @@
 namespace
 {
     constexpr int pollHz = 20;
-    constexpr int showDelayTicks = 3;   // 150 ms
+    constexpr int showDelayTicks = 8;   // 400 ms: a single-song rebuild takes less
 }
 
 LoadingOverlay::LoadingOverlay (Session& session)

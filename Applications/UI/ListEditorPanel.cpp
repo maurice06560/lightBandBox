@@ -315,286 +315,6 @@ private:
 };
 
 //==============================================================================
-/** The selected track: name, type, input and DI output (physical), WAV (audio), and its volume and
-    mute / solo in the selected mix bus.
-*/
-class TrackPage final : public juce::Component
-{
-public:
-    explicit TrackPage (Session& session) : m_session (session)
-    {
-        m_input.onChange = [this]
-        {
-            const auto channel = m_input.getSelectedId() - 1;
-            editPhysical ([channel] (MBoxPhysicalTrack& t) { t.setPhysicalInput (channel); }, "Input " + juce::String (channel + 1));
-        };
-
-        m_diOutput.setTooltip ("Sends this track's own sound (after its bankslot effects) straight to an output, before any mix");
-        m_diOutput.onChange = [this]
-        {
-            const auto id = m_diOutput.getSelectedId();
-
-            if (id == 0)
-                return;
-
-            const auto output = id == noneId ? -1 : id - 2;
-
-            // Deferred: the edit refreshes this page, which refills the box
-            juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<TrackPage> (this), output]
-            {
-                if (safe != nullptr)
-                    safe->editPhysical ([output] (MBoxPhysicalTrack& t) { t.setDIOutput (output); },
-                                        output < 0 ? juce::String ("DI output off") : "DI output " + juce::String (output + 1));
-            });
-        };
-
-        makeEditable (m_start, [this] (const juce::String& text)
-        {
-            auto* song = m_session.getSelectedSong();
-            Bar position;
-
-            if (song == nullptr)
-                return;
-
-            if (const auto result = parseSongPosition (*song, text, position); result.failed())
-            {
-                m_session.report (result);
-                refresh();
-                return;
-            }
-
-            m_session.moveWav (m_session.getSelectedTrackId(), position);
-        });
-
-        makeEditable (m_name, [this] (const juce::String& text)
-        {
-            const auto name = text.trim();
-            m_session.editTrack ([name] (MBoxTrack& t)
-                                 {
-                                     if (name.isEmpty())
-                                         return juce::Result::fail ("A track needs a name");
-
-                                     t.setName (name);
-                                     return juce::Result::ok();
-                                 },
-                                 "Track renamed to " + name);
-        });
-
-        makeEditable (m_volume, [this] (const juce::String& text)
-        {
-            const auto silent = text.containsIgnoreCase ("inf");
-            const auto value = silent ? minVolumeDb : (double) text.upToFirstOccurrenceOf ("dB", false, true).getFloatValue();
-            m_session.setTrackVolume (m_session.getSelectedTrackId(), value);
-        });
-
-        m_choose.onClick = [this] { chooseWav(); };
-        m_clear.onClick = [this]
-        {
-            m_session.editTrack ([] (MBoxTrack& t)
-                                 {
-                                     auto* audio = dynamic_cast<MBoxAudioTrack*> (&t);
-
-                                     if (audio == nullptr)
-                                         return juce::Result::fail ("Not a WAV track");
-
-                                     audio->setFilename ({}, 0);
-                                     return juce::Result::ok();
-                                 },
-                                 "WAV removed from the track (the file stays in the song's media folder)");
-        };
-
-        // Live, like volume: never greyed by playback
-        m_mute.onClick = [this] { m_session.setTrackMute (m_session.getSelectedTrackId(), m_mute.getToggleState()); };
-        m_solo.onClick = [this] { m_session.setTrackSolo (m_session.getSelectedTrackId(), m_solo.getToggleState()); };
-        m_mute.setTooltip ("Mute this track");
-        m_solo.setTooltip ("Solo: only soloed tracks play");
-        m_muteSolo.addAndMakeVisible (m_mute);
-        m_muteSolo.addAndMakeVisible (m_solo);
-
-        m_rows.push_back ({ nullptr, &m_title, 30 });
-        m_rows.push_back ({ caption ("Name"), &m_name, 30 });
-        m_rows.push_back ({ caption ("Type"), &m_type, 30 });
-        m_rows.push_back ({ caption ("Input"), &m_input, 28 });
-        m_rows.push_back ({ caption ("DI output"), &m_diOutput, 28 });
-        m_rows.push_back ({ caption ("WAV"), &m_file, 30 });
-        m_rows.push_back ({ nullptr, &m_wavButtons, 32 });
-        m_rows.push_back ({ caption ("Starts at"), &m_start, 30 });
-        m_rows.push_back ({ caption ("Mix"), &m_mix, 30 });
-        m_rows.push_back ({ caption ("Volume"), &m_volume, 30 });
-        m_rows.push_back ({ caption ("Mute / Solo"), &m_muteSolo, 30 });
-
-        for (auto& row : m_rows)
-        {
-            if (row.caption != nullptr)
-                addAndMakeVisible (*row.caption);
-
-            addAndMakeVisible (row.control);
-        }
-
-        m_wavButtons.addAndMakeVisible (m_choose);
-        m_wavButtons.addAndMakeVisible (m_clear);
-        addAndMakeVisible (m_placeholder);
-        addAndMakeVisible (m_hint);
-        refresh();
-    }
-
-    void refresh()
-    {
-        auto* track = m_session.getSelectedTrack();
-
-        for (int i = 0; i < getNumChildComponents(); ++i)
-            getChildComponent (i)->setVisible (track != nullptr);
-
-        m_placeholder.setVisible (track == nullptr);
-
-        if (track == nullptr)
-            return;
-
-        auto* audio = dynamic_cast<MBoxAudioTrack*> (track);
-        auto* physical = dynamic_cast<MBoxPhysicalTrack*> (track);
-        const auto hasFile = audio != nullptr && audio->getFilename() != juce::File();
-
-        m_title.setText ("Track " + juce::String (track->getId()), juce::dontSendNotification);
-        m_name.setText (track->getName(), juce::dontSendNotification);
-        m_type.setText (UIHelpers::trackTypeName (track->getType()), juce::dontSendNotification);
-
-        // The mix changes live; the rest of the track waits for playback to stop
-        const auto unlocked = ! m_session.isEditLocked();
-        m_name.setEnabled (unlocked);
-
-        const auto device = m_session.getCore().getCurrentDevice();
-
-        // Input: the device's input channels (or 1..8 when no device is open)
-        m_input.clear (juce::dontSendNotification);
-
-        for (int channel = 0; channel < juce::jmax (8, device.m_numInputs); ++channel)
-            m_input.addItem (juce::String (channel + 1) + "   " + (channel < device.m_numInputs ? juce::String (device.m_inputNames[(size_t) channel])
-                                                                                               : "Input " + juce::String (channel + 1)),
-                             channel + 1);
-
-        m_input.setSelectedId (physical != nullptr ? physical->getPhysicalInput() + 1 : 0, juce::dontSendNotification);
-        m_input.setEnabled (physical != nullptr && unlocked);
-
-        // DI output: none, or one of the device's outputs
-        m_diOutput.clear (juce::dontSendNotification);
-        m_diOutput.addItem ("None", noneId);
-
-        for (int channel = 0; channel < juce::jmax (2, device.m_numOutputs); ++channel)
-            m_diOutput.addItem (juce::String (channel + 1) + "   " + (channel < device.m_numOutputs ? juce::String (device.m_outputNames[(size_t) channel])
-                                                                                                  : "Output " + juce::String (channel + 1)),
-                                channel + 2);
-
-        const auto di = physical != nullptr ? physical->getDIOutput() : -1;
-        m_diOutput.setSelectedId (di < 0 ? noneId : di + 2, juce::dontSendNotification);
-        m_diOutput.setEnabled (physical != nullptr && unlocked);
-
-        m_file.setText (hasFile ? audio->getFilename().getFileName() : juce::String (audio != nullptr ? "None" : "-"), juce::dontSendNotification);
-        m_start.setText (hasFile ? UIHelpers::positionText (audio->getAudioStart()) : juce::String ("-"), juce::dontSendNotification);
-        m_choose.setEnabled (audio != nullptr && unlocked);
-        m_clear.setEnabled (hasFile && unlocked);
-        m_start.setEnabled (hasFile && unlocked);
-        m_file.setEnabled (audio != nullptr);
-
-        // Volume and mute / solo belong to the bus shown in the mixer
-        const auto* trackMix = m_session.getTrackMix (track->getId());
-        m_mix.setText (m_session.getSelectedMixBus().getName(), juce::dontSendNotification);
-        m_volume.setText (trackMix != nullptr ? UIHelpers::volumeText (trackMix->m_volume) : juce::String ("-"), juce::dontSendNotification);
-        m_mute.setToggleState (trackMix != nullptr && trackMix->m_mute, juce::dontSendNotification);
-        m_solo.setToggleState (trackMix != nullptr && trackMix->m_solo, juce::dontSendNotification);
-
-        // Only the rows of this kind of track
-        for (auto* control : std::initializer_list<juce::Component*> { &m_input, &m_diOutput })
-            showRow (m_rows, *control, physical != nullptr);
-
-        for (auto* control : std::initializer_list<juce::Component*> { &m_file, &m_wavButtons, &m_start })
-            showRow (m_rows, *control, audio != nullptr);
-
-        resized();
-
-        m_hint.setText (audio != nullptr    ? "The WAV starts at its position and plays to its end; the right locator follows it if it ends later."
-                        : physical != nullptr ? "Plays the input live through the bankslots set in the Bankslots list."
-                                              : "Plays cue clicks at the positions added in the arrangement.",
-                        juce::dontSendNotification);
-    }
-
-    void resized() override
-    {
-        auto area = getLocalBounds();
-        m_placeholder.setBounds (area.withHeight (60));
-        area.removeFromTop (layoutForm (m_rows, area, 90));
-
-        auto muteSolo = m_muteSolo.getLocalBounds();
-        m_mute.setBounds (muteSolo.removeFromLeft (muteSolo.getWidth() / 2).reduced (2, 0));
-        m_solo.setBounds (muteSolo.reduced (2, 0));
-        m_hint.setBounds (area.removeFromTop (44));
-
-        auto buttons = m_wavButtons.getLocalBounds().withTrimmedLeft (90);
-        m_choose.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2).reduced (2, 0));
-        m_clear.setBounds (buttons.reduced (2, 0));
-    }
-
-private:
-    static constexpr int noneId = 1;
-
-    void editPhysical (const std::function<void (MBoxPhysicalTrack&)>& edit, const juce::String& message)
-    {
-        m_session.editTrack ([&edit] (MBoxTrack& t)
-                             {
-                                 auto* physical = dynamic_cast<MBoxPhysicalTrack*> (&t);
-
-                                 if (physical == nullptr)
-                                     return juce::Result::fail ("Not a physical track");
-
-                                 edit (*physical);
-                                 return juce::Result::ok();
-                             },
-                             message);
-    }
-
-    void chooseWav()
-    {
-        auto* audio = dynamic_cast<MBoxAudioTrack*> (m_session.getSelectedTrack());
-
-        if (audio == nullptr || ! m_session.canEdit())
-            return;
-
-        const auto trackId = audio->getId();
-        const auto start = audio->getFilename() != juce::File() ? audio->getAudioStart() : m_session.getCursor();
-
-        m_chooser = std::make_unique<juce::FileChooser> ("Choose a WAV (PCM 16-bit, 44.1 kHz, stereo)",
-                                                         juce::File::getSpecialLocation (juce::File::userMusicDirectory), "*.wav");
-        m_chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                                [this, trackId, start] (const juce::FileChooser& chooser)
-                                {
-                                    if (const auto file = chooser.getResult(); file.existsAsFile())
-                                        m_session.importWav (trackId, start, file);
-                                });
-    }
-
-    Session& m_session;
-    std::vector<FormRow> m_rows;
-
-    ui::Label m_title { {}, ui::Label::Style::Heading };
-    ui::Label m_name { {}, ui::Label::Style::Value };
-    ui::Label m_type { {}, ui::Label::Style::Body };
-    juce::ComboBox m_input;
-    juce::ComboBox m_diOutput;
-    ui::Label m_mix { {}, ui::Label::Style::Body };
-    ui::Label m_file { {}, ui::Label::Style::Body };
-    juce::Component m_wavButtons;
-    ui::Button m_choose { "Choose..." };
-    ui::Button m_clear { "Clear" };
-    ui::Label m_start { {}, ui::Label::Style::Value };
-    ui::Label m_volume { {}, ui::Label::Style::Value };
-    juce::Component m_muteSolo;
-    ui::Button m_mute { "Mute", ui::Button::Variant::Mute, true };
-    ui::Button m_solo { "Solo", ui::Button::Variant::Solo, true };
-    ui::Label m_hint { {}, ui::Label::Style::Caption };
-    ui::Label m_placeholder { "No track selected", ui::Label::Style::Caption };
-    std::unique_ptr<juce::FileChooser> m_chooser;
-};
-
-//==============================================================================
 /** A Position | value | ... list with + and - buttons, editable in place (double-click a cell). */
 class EventTable : public juce::Component,
                    public juce::TableListBoxModel
@@ -679,7 +399,7 @@ public:
         toolbar.removeFromLeft (10);
         m_caption.setBounds (toolbar);
         area.removeFromTop (8);
-        m_hint.setBounds (area.removeFromBottom (40));
+        m_hint.setBounds (getHint().isNotEmpty() ? area.removeFromBottom (40) : juce::Rectangle<int>());
         m_table.setBounds (area);
     }
 
@@ -1227,6 +947,417 @@ protected:
                              },
                              "Bankslot switch deleted");
     }
+};
+
+//==============================================================================
+/** The cue clicks of the selected Info track: where each group of clicks starts. */
+class CueTable final : public EventTable
+{
+public:
+    explicit CueTable (Session& session)
+        : EventTable (session, { { "Position", 110, true }, { "Clicks", 70, false }, { "Time", 90, false } })
+    {
+    }
+
+    int getNumRows() override
+    {
+        auto* track = infoTrack();
+        return track != nullptr ? (int) track->getInfoClicks().size() : 0;
+    }
+
+    int rowForPosition (const Bar& position) override
+    {
+        auto* track = infoTrack();
+
+        if (track == nullptr)
+            return -1;
+
+        const auto& cues = track->getInfoClicks();
+
+        for (size_t i = 0; i < cues.size(); ++i)
+            if (cues[i] == position)
+                return (int) i;
+
+        return -1;
+    }
+
+protected:
+    MBoxInfoTrack* infoTrack()
+    {
+        return dynamic_cast<MBoxInfoTrack*> (m_session.getSelectedTrack());
+    }
+
+    juce::String getCaption() override { return "Cues"; }
+    juce::String getHint() override    { return {}; }   // the track page explains them
+    bool canAdd() override             { return infoTrack() != nullptr; }
+
+    juce::String getCellText (int row, int columnId) override
+    {
+        auto* song = m_session.getSelectedSong();
+        const auto position = infoTrack()->getInfoClicks()[(size_t) row];
+
+        switch (columnId)
+        {
+            case 1:  return UIHelpers::positionText (position);
+            case 2:  return juce::String (song->getTimeline().getSignatureAtBar (position.m_bar).m_numerator);
+            default: return UIHelpers::timeText (TempoMap (*song).toSeconds (position));
+        }
+    }
+
+    bool isCellEditable (int, int columnId) override { return columnId == 1; }
+
+    /** Applies an edit to the selected info track. */
+    juce::Result editInfo (const std::function<juce::Result (MBoxInfoTrack&)>& edit, const juce::String& message)
+    {
+        return m_session.editTrack ([&edit] (MBoxTrack& t)
+                                    {
+                                        auto* info = dynamic_cast<MBoxInfoTrack*> (&t);
+                                        return info != nullptr ? edit (*info) : juce::Result::fail ("Not an info track");
+                                    },
+                                    message);
+    }
+
+    juce::Result setCellText (int row, int, const juce::String& text) override
+    {
+        auto* song = m_session.getSelectedSong();
+        Bar position;
+
+        if (auto r = parseSongPosition (*song, text, position); r.failed())
+            return r;
+
+        const auto old = infoTrack()->getInfoClicks()[(size_t) row];
+
+        if (rowForPosition (position) >= 0 && position != old)
+            return juce::Result::fail ("There is already a cue at " + UIHelpers::positionText (position));
+
+        const auto result = editInfo ([old, position] (MBoxInfoTrack& t)
+                                      {
+                                          t.removeInfoClick (old);
+                                          t.addInfoClick (position);
+                                          return juce::Result::ok();
+                                      },
+                                      "Cue moved to " + UIHelpers::positionText (position));
+        selectRow (rowForPosition (position));
+        return result;
+    }
+
+    juce::Result addRow() override
+    {
+        if (infoTrack() == nullptr)
+            return juce::Result::fail ("Select an Info track first");
+
+        const auto position = m_session.getCursor();
+
+        if (rowForPosition (position) >= 0)
+            return juce::Result::fail ("There is already a cue at " + UIHelpers::positionText (position) + ": move the edit cursor first");
+
+        const auto result = editInfo ([position] (MBoxInfoTrack& t) { t.addInfoClick (position); return juce::Result::ok(); },
+                                      "Cue clicks added at " + UIHelpers::positionText (position));
+        selectRow (rowForPosition (position));
+        return result;
+    }
+
+    juce::Result deleteRow (int row) override
+    {
+        const auto position = infoTrack()->getInfoClicks()[(size_t) row];
+        return editInfo ([position] (MBoxInfoTrack& t)
+                         {
+                             return t.removeInfoClick (position) ? juce::Result::ok() : juce::Result::fail ("No cue there");
+                         },
+                         "Cue at " + UIHelpers::positionText (position) + " deleted");
+    }
+};
+
+//==============================================================================
+/** The selected track: name, type, input and DI output (physical), WAV (audio), its cues (info),
+    and its volume and mute / solo in the selected mix bus.
+*/
+class TrackPage final : public juce::Component
+{
+public:
+    explicit TrackPage (Session& session) : m_session (session)
+    {
+        m_input.onChange = [this]
+        {
+            const auto channel = m_input.getSelectedId() - 1;
+            editPhysical ([channel] (MBoxPhysicalTrack& t) { t.setPhysicalInput (channel); }, "Input " + juce::String (channel + 1));
+        };
+
+        m_diOutput.setTooltip ("Sends this track's own sound (after its bankslot effects) straight to an output, before any mix");
+        m_diOutput.onChange = [this]
+        {
+            const auto id = m_diOutput.getSelectedId();
+
+            if (id == 0)
+                return;
+
+            const auto output = id == noneId ? -1 : id - 2;
+
+            // Deferred: the edit refreshes this page, which refills the box
+            juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<TrackPage> (this), output]
+            {
+                if (safe != nullptr)
+                    safe->editPhysical ([output] (MBoxPhysicalTrack& t) { t.setDIOutput (output); },
+                                        output < 0 ? juce::String ("DI output off") : "DI output " + juce::String (output + 1));
+            });
+        };
+
+        makeEditable (m_start, [this] (const juce::String& text)
+        {
+            auto* song = m_session.getSelectedSong();
+            Bar position;
+
+            if (song == nullptr)
+                return;
+
+            if (const auto result = parseSongPosition (*song, text, position); result.failed())
+            {
+                m_session.report (result);
+                refresh();
+                return;
+            }
+
+            m_session.moveWav (m_session.getSelectedTrackId(), position);
+        });
+
+        makeEditable (m_name, [this] (const juce::String& text)
+        {
+            const auto name = text.trim();
+            m_session.editTrack ([name] (MBoxTrack& t)
+                                 {
+                                     if (name.isEmpty())
+                                         return juce::Result::fail ("A track needs a name");
+
+                                     t.setName (name);
+                                     return juce::Result::ok();
+                                 },
+                                 "Track renamed to " + name);
+        });
+
+        makeEditable (m_volume, [this] (const juce::String& text)
+        {
+            const auto silent = text.containsIgnoreCase ("inf");
+            const auto value = silent ? minVolumeDb : (double) text.upToFirstOccurrenceOf ("dB", false, true).getFloatValue();
+            m_session.setTrackVolume (m_session.getSelectedTrackId(), value);
+        });
+
+        m_choose.onClick = [this] { chooseWav(); };
+        m_clear.onClick = [this]
+        {
+            m_session.editTrack ([] (MBoxTrack& t)
+                                 {
+                                     auto* audio = dynamic_cast<MBoxAudioTrack*> (&t);
+
+                                     if (audio == nullptr)
+                                         return juce::Result::fail ("Not a WAV track");
+
+                                     audio->setFilename ({}, 0);
+                                     return juce::Result::ok();
+                                 },
+                                 "WAV removed from the track (the file stays in the song's media folder)");
+        };
+
+        // Live, like volume: never greyed by playback
+        m_mute.onClick = [this] { m_session.setTrackMute (m_session.getSelectedTrackId(), m_mute.getToggleState()); };
+        m_solo.onClick = [this] { m_session.setTrackSolo (m_session.getSelectedTrackId(), m_solo.getToggleState()); };
+        m_mute.setTooltip ("Mute this track");
+        m_solo.setTooltip ("Solo: only soloed tracks play");
+        m_muteSolo.addAndMakeVisible (m_mute);
+        m_muteSolo.addAndMakeVisible (m_solo);
+
+        m_rows.push_back ({ nullptr, &m_title, 30 });
+        m_rows.push_back ({ caption ("Name"), &m_name, 30 });
+        m_rows.push_back ({ caption ("Type"), &m_type, 30 });
+        m_rows.push_back ({ caption ("Input"), &m_input, 28 });
+        m_rows.push_back ({ caption ("DI output"), &m_diOutput, 28 });
+        m_rows.push_back ({ caption ("WAV"), &m_file, 30 });
+        m_rows.push_back ({ nullptr, &m_wavButtons, 32 });
+        m_rows.push_back ({ caption ("Starts at"), &m_start, 30 });
+        m_rows.push_back ({ caption ("Mix"), &m_mix, 30 });
+        m_rows.push_back ({ caption ("Volume"), &m_volume, 30 });
+        m_rows.push_back ({ caption ("Mute / Solo"), &m_muteSolo, 30 });
+
+        for (auto& row : m_rows)
+        {
+            if (row.caption != nullptr)
+                addAndMakeVisible (*row.caption);
+
+            addAndMakeVisible (row.control);
+        }
+
+        m_wavButtons.addAndMakeVisible (m_choose);
+        m_wavButtons.addAndMakeVisible (m_clear);
+        addAndMakeVisible (m_placeholder);
+        addAndMakeVisible (m_hint);
+        addAndMakeVisible (m_cues);
+        refresh();
+    }
+
+    void refresh()
+    {
+        auto* track = m_session.getSelectedTrack();
+
+        for (int i = 0; i < getNumChildComponents(); ++i)
+            getChildComponent (i)->setVisible (track != nullptr);
+
+        m_placeholder.setVisible (track == nullptr);
+
+        if (track == nullptr)
+            return;
+
+        auto* audio = dynamic_cast<MBoxAudioTrack*> (track);
+        auto* physical = dynamic_cast<MBoxPhysicalTrack*> (track);
+        const auto hasFile = audio != nullptr && audio->getFilename() != juce::File();
+
+        m_title.setText ("Track " + juce::String (track->getId()), juce::dontSendNotification);
+        m_name.setText (track->getName(), juce::dontSendNotification);
+        m_type.setText (UIHelpers::trackTypeName (track->getType()), juce::dontSendNotification);
+
+        // The mix changes live; the rest of the track waits for playback to stop
+        const auto unlocked = ! m_session.isEditLocked();
+        m_name.setEnabled (unlocked);
+
+        const auto device = m_session.getCore().getCurrentDevice();
+
+        // Input: the device's input channels (or 1..8 when no device is open)
+        m_input.clear (juce::dontSendNotification);
+
+        for (int channel = 0; channel < juce::jmax (8, device.m_numInputs); ++channel)
+            m_input.addItem (juce::String (channel + 1) + "   " + (channel < device.m_numInputs ? juce::String (device.m_inputNames[(size_t) channel])
+                                                                                               : "Input " + juce::String (channel + 1)),
+                             channel + 1);
+
+        m_input.setSelectedId (physical != nullptr ? physical->getPhysicalInput() + 1 : 0, juce::dontSendNotification);
+        m_input.setEnabled (physical != nullptr && unlocked);
+
+        // DI output: none, or one of the device's outputs
+        m_diOutput.clear (juce::dontSendNotification);
+        m_diOutput.addItem ("None", noneId);
+
+        for (int channel = 0; channel < juce::jmax (2, device.m_numOutputs); ++channel)
+            m_diOutput.addItem (juce::String (channel + 1) + "   " + (channel < device.m_numOutputs ? juce::String (device.m_outputNames[(size_t) channel])
+                                                                                                  : "Output " + juce::String (channel + 1)),
+                                channel + 2);
+
+        const auto di = physical != nullptr ? physical->getDIOutput() : -1;
+        m_diOutput.setSelectedId (di < 0 ? noneId : di + 2, juce::dontSendNotification);
+        m_diOutput.setEnabled (physical != nullptr && unlocked);
+
+        m_file.setText (hasFile ? audio->getFilename().getFileName() : juce::String (audio != nullptr ? "None" : "-"), juce::dontSendNotification);
+        m_start.setText (hasFile ? UIHelpers::positionText (audio->getAudioStart()) : juce::String ("-"), juce::dontSendNotification);
+        m_choose.setEnabled (audio != nullptr && unlocked);
+        m_clear.setEnabled (hasFile && unlocked);
+        m_start.setEnabled (hasFile && unlocked);
+        m_file.setEnabled (audio != nullptr);
+
+        // Volume and mute / solo belong to the bus shown in the mixer
+        const auto* trackMix = m_session.getTrackMix (track->getId());
+        m_mix.setText (m_session.getSelectedMixBus().getName(), juce::dontSendNotification);
+        m_volume.setText (trackMix != nullptr ? UIHelpers::volumeText (trackMix->m_volume) : juce::String ("-"), juce::dontSendNotification);
+        m_mute.setToggleState (trackMix != nullptr && trackMix->m_mute, juce::dontSendNotification);
+        m_solo.setToggleState (trackMix != nullptr && trackMix->m_solo, juce::dontSendNotification);
+
+        // Only the rows of this kind of track
+        for (auto* control : std::initializer_list<juce::Component*> { &m_input, &m_diOutput })
+            showRow (m_rows, *control, physical != nullptr);
+
+        for (auto* control : std::initializer_list<juce::Component*> { &m_file, &m_wavButtons, &m_start })
+            showRow (m_rows, *control, audio != nullptr);
+
+        // An info track's mix is in the mixer and its header: the room goes to its cues
+        const auto isInfo = dynamic_cast<MBoxInfoTrack*> (track) != nullptr;
+
+        for (auto* control : std::initializer_list<juce::Component*> { &m_mix, &m_volume, &m_muteSolo })
+            showRow (m_rows, *control, ! isInfo);
+
+        m_cues.setVisible (isInfo);
+        m_cues.refresh();
+        resized();
+
+        m_hint.setText (audio != nullptr    ? "The WAV starts at its position and plays to its end; the right locator follows it if it ends later."
+                        : physical != nullptr ? "Plays the input live through the bankslots set in the Bankslots list."
+                                              : "Each cue clicks once per beat of its bar's signature, the first one accented. Add one at the "
+                                                "edit cursor with +, or click in the arrangement; double-click a position to move it.",
+                        juce::dontSendNotification);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        m_placeholder.setBounds (area.withHeight (60));
+        area.removeFromTop (layoutForm (m_rows, area, 90));
+
+        auto muteSolo = m_muteSolo.getLocalBounds();
+        m_mute.setBounds (muteSolo.removeFromLeft (muteSolo.getWidth() / 2).reduced (2, 0));
+        m_solo.setBounds (muteSolo.reduced (2, 0));
+        m_hint.setBounds (area.removeFromTop (44));
+        m_cues.setBounds (area.withTrimmedTop (4));
+
+        auto buttons = m_wavButtons.getLocalBounds().withTrimmedLeft (90);
+        m_choose.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2).reduced (2, 0));
+        m_clear.setBounds (buttons.reduced (2, 0));
+    }
+
+private:
+    static constexpr int noneId = 1;
+
+    void editPhysical (const std::function<void (MBoxPhysicalTrack&)>& edit, const juce::String& message)
+    {
+        m_session.editTrack ([&edit] (MBoxTrack& t)
+                             {
+                                 auto* physical = dynamic_cast<MBoxPhysicalTrack*> (&t);
+
+                                 if (physical == nullptr)
+                                     return juce::Result::fail ("Not a physical track");
+
+                                 edit (*physical);
+                                 return juce::Result::ok();
+                             },
+                             message);
+    }
+
+    void chooseWav()
+    {
+        auto* audio = dynamic_cast<MBoxAudioTrack*> (m_session.getSelectedTrack());
+
+        if (audio == nullptr || ! m_session.canEdit())
+            return;
+
+        const auto trackId = audio->getId();
+        const auto start = audio->getFilename() != juce::File() ? audio->getAudioStart() : m_session.getCursor();
+
+        m_chooser = std::make_unique<juce::FileChooser> ("Choose a WAV (PCM 16-bit, 44.1 kHz, stereo)",
+                                                         juce::File::getSpecialLocation (juce::File::userMusicDirectory), "*.wav");
+        m_chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                [this, trackId, start] (const juce::FileChooser& chooser)
+                                {
+                                    if (const auto file = chooser.getResult(); file.existsAsFile())
+                                        m_session.importWav (trackId, start, file);
+                                });
+    }
+
+    Session& m_session;
+    std::vector<FormRow> m_rows;
+
+    ui::Label m_title { {}, ui::Label::Style::Heading };
+    ui::Label m_name { {}, ui::Label::Style::Value };
+    ui::Label m_type { {}, ui::Label::Style::Body };
+    juce::ComboBox m_input;
+    juce::ComboBox m_diOutput;
+    ui::Label m_mix { {}, ui::Label::Style::Body };
+    ui::Label m_file { {}, ui::Label::Style::Body };
+    juce::Component m_wavButtons;
+    ui::Button m_choose { "Choose..." };
+    ui::Button m_clear { "Clear" };
+    ui::Label m_start { {}, ui::Label::Style::Value };
+    ui::Label m_volume { {}, ui::Label::Style::Value };
+    juce::Component m_muteSolo;
+    ui::Button m_mute { "Mute", ui::Button::Variant::Mute, true };
+    ui::Button m_solo { "Solo", ui::Button::Variant::Solo, true };
+    ui::Label m_hint { {}, ui::Label::Style::Caption };
+    ui::Label m_placeholder { "No track selected", ui::Label::Style::Caption };
+    CueTable m_cues { m_session };
+    std::unique_ptr<juce::FileChooser> m_chooser;
 };
 
 //==============================================================================

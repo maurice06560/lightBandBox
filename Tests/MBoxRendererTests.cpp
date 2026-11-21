@@ -278,6 +278,73 @@ public:
             expectEquals (output.getMagnitude (0, 1024, 2 * bar - 1024), 0.0f);   // bus 1: muted track, no click
         }
 
+        beginTest ("A single-song rebuild shares all but the edited song, and keeps its running parts");
+        {
+            MBoxPlaylist playlist ("P");
+            playlist.addSong ("A");
+            playlist.addSong ("B");
+            auto& a = *playlist.getSongInstance ("A");
+            addAudioTrack (a, wav, { 1, 1, 1, 0 });
+            auto physical = std::make_unique<MBoxPhysicalTrack> (0, "Guitar");
+            physical->setPhysicalInput (1);
+            physical->setBankSlotChange ({ 1, 1, 1, 0 }, { 1, 1 });
+            int guitarId = 0;
+            expect (a.addTrack (std::move (physical), &guitarId).wasOk());
+
+            MBoxRenderer renderer;
+            auto* running = load (renderer, playlist);
+            const auto banks = createDefaultBanks();
+            const MBoxRig rig;
+            const MBoxPlayerBuildContext context { m_clips, nullptr, banks, rig, 44100.0, MBoxRenderer::maxChunkSize, 0.0, {}, {} };
+            juce::String error;
+
+            // A cue track added to A
+            auto cues = std::make_unique<MBoxInfoTrack> (0, "Cues");
+            cues->addInfoClick ({ 2, 1, 1, 0 });
+            int cuesId = 0;
+            expect (a.addTrack (std::move (cues), &cuesId).wasOk());
+
+            auto rebuilt = rebuildSongPlayer (playlist, "A", *running, context, error);
+            expect (rebuilt != nullptr, error);
+            expect (rebuilt->m_songs[1] == running->m_songs[1]);
+            expect (rebuilt->m_songs[0] != running->m_songs[0]);
+            expect (rebuilt->m_liveInputs == running->m_liveInputs);
+            expect (rebuilt->m_masterChains == running->m_masterChains);
+
+            const auto& before = *running->m_songs[0];
+            auto& after = *rebuilt->m_songs[0];
+            expectEquals ((int) after.m_tracks.size(), 3);
+            expect (after.m_tracks[0].m_inserts[0] == before.m_tracks[0].m_inserts[0]);
+            expect (after.m_tracks[0].m_mix[0] == before.m_tracks[0].m_mix[0]);
+            expect (after.m_tracks[1].m_liveInput == before.m_tracks[1].m_liveInput);
+            expectEquals ((int) after.findTrack (cuesId)->m_infoClicks.size(), 4);
+
+            // It plays
+            renderer.publish (std::move (rebuilt));
+            renderer.play();
+            MBoxTest::render (renderer, 1024);
+            renderer.collectGarbage();
+            running = renderer.getPublishedPlayer();
+
+            // A cue moved, and a track removed: also rebuilt alone
+            dynamic_cast<MBoxInfoTrack*> (a.getTrack (cuesId))->addInfoClick ({ 3, 1, 1, 0 });
+            expect (a.removeTrack (after.m_tracks[0].m_trackId).wasOk());
+            rebuilt = rebuildSongPlayer (playlist, "A", *running, context, error);
+            expect (rebuilt != nullptr, error);
+            expectEquals ((int) rebuilt->m_songs[0]->m_tracks.size(), 2);
+            expectEquals ((int) rebuilt->m_songs[0]->findTrack (cuesId)->m_infoClicks.size(), 8);
+
+            // A slot the live input doesn't run yet, or a new song: only a full build can
+            dynamic_cast<MBoxPhysicalTrack*> (a.getTrack (guitarId))->setBankSlotChange ({ 2, 1, 1, 0 }, { 1, 2 });
+            expect (rebuildSongPlayer (playlist, "A", *running, context, error) == nullptr);
+            expect (error.isEmpty(), error);
+            expect (dynamic_cast<MBoxPhysicalTrack*> (a.getTrack (guitarId))->removeBankSlotChange ({ 2, 1, 1, 0 }));
+
+            playlist.addSong ("C");
+            expect (rebuildSongPlayer (playlist, "A", *running, context, error) == nullptr);
+            expect (error.isEmpty(), error);
+        }
+
         beginTest ("Live inputs: pan, DI output, mono bus, master volume, silent when stopped");
         {
             MBoxPlaylist playlist ("P");

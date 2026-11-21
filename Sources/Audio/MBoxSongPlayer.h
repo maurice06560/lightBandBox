@@ -8,6 +8,7 @@
 
 #include <array>
 #include <atomic>
+#include <map>
 #include <optional>
 
 class MBoxPluginHost;
@@ -54,15 +55,18 @@ struct MBoxSongPlayer
         // Physical tracks
         int m_physicalInput { -1 };
         int m_diOutput { -1 };
-        MBoxLiveInput* m_liveInput { nullptr };                          // owned by the playlist player
+        MBoxLiveInput* m_liveInput { nullptr };                          // shared by the playlist player
         std::vector<std::pair<std::int64_t, MBoxSlotRef>> m_slotChanges;  // sorted by frame
 
         // Info tracks
         std::vector<MBoxClickEvent> m_infoClicks;
 
-        // Per mix bus: inserts (always present, possibly empty, padded for latency) and mix state
-        std::array<std::unique_ptr<MBoxEffectChain>, numberOfMixBus> m_inserts;
-        std::array<std::unique_ptr<MBoxMixState>, numberOfMixBus> m_mix;
+        // Per mix bus: inserts (always present, possibly empty, padded for latency), the
+        // effects they were built from, and mix state. Shared with the players a single-song
+        // rebuild makes, so a running chain or mix keeps going through the swap.
+        std::array<std::shared_ptr<MBoxEffectChain>, numberOfMixBus> m_inserts;
+        std::array<std::vector<MBoxEffect>, numberOfMixBus> m_insertEffects;
+        std::array<std::shared_ptr<MBoxMixState>, numberOfMixBus> m_mix;
 
         // The slot of a physical track at a frame: the last change at or before it, or the
         // first change when the frame is before all of them
@@ -94,14 +98,20 @@ struct MBoxSongPlayer
 };
 
 //==============================================================================
-// The runtime version of a whole playlist, swapped in as one unit by the renderer.
+// The runtime version of a whole playlist, swapped in as one unit by the renderer. Its parts
+// are shared, so a copy (made on the message thread) can serve as the base of a single-song
+// rebuild: the new player shares every unchanged part with the running one.
 //==============================================================================
 struct MBoxPlaylistPlayer
 {
     juce::String m_playlistName;
-    std::vector<std::unique_ptr<MBoxSongPlayer>> m_songs;
-    std::vector<std::unique_ptr<MBoxLiveInput>> m_liveInputs;
-    std::array<std::unique_ptr<MBoxEffectChain>, numberOfMixBus> m_masterChains;
+    std::vector<std::shared_ptr<MBoxSongPlayer>> m_songs;
+    // Shared by every song, keyed by (input channel, n-th physical track on that input within
+    // a song), so a chain keeps running across songs
+    std::map<std::pair<int, int>, std::shared_ptr<MBoxLiveInput>> m_liveInputs;
+    std::array<std::shared_ptr<MBoxEffectChain>, numberOfMixBus> m_masterChains;
+    int m_maxSlotLatency { 0 };     // the live inputs' slot chains are padded to this
+    int m_maxInsertLatency { 0 };   // the inserts are padded so each path totals m_totalLatency
     int m_totalLatency { 0 };       // every path (live, WAV, clicks) is delayed to this
     std::uint64_t m_generation { 0 };  // set by the renderer when published
 };
@@ -129,3 +139,16 @@ struct MBoxPlayerBuildContext
 std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& playlist,
                                                          const MBoxPlayerBuildContext& context,
                                                          juce::String& error);
+
+// Rebuilds only one song of a playlist snapshot, on top of a copy of the running player
+// (base), after an edit of that song alone (tracks, cues, locators, tempo, inserts...). The
+// other songs, the live inputs and the master chains are shared with the running player. A
+// track keeps its running inserts and mix state when its inserts' plugins are the same (same
+// plugins in the same order, same bypass: the running plugins hold their current state); only
+// new chains are created, prepared and warmed up. The running parts are only read.
+// Returns nullptr with an empty error when it can't (the songs differ, a new chain is longer
+// than the latency the playlist is padded to, or a live input lacks a bank slot): do a full
+// build then. Returns nullptr with an error on failure or cancellation.
+std::unique_ptr<MBoxPlaylistPlayer> rebuildSongPlayer (const MBoxPlaylist& playlist, const juce::String& songName,
+                                                       MBoxPlaylistPlayer base, const MBoxPlayerBuildContext& context,
+                                                       juce::String& error);

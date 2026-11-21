@@ -97,9 +97,11 @@ struct MBoxCoreAudio::Impl final : private juce::Timer
     MBoxSongPlayer* getRuntimeSong (const juce::String& songName) const;
     MBoxRenderer& getRenderer() const  { return m_audioEngine->getRenderer(); }
 
-    void startLoad (const juce::String& playlistName, const juce::String& songName, bool reselect);
+    void startLoad (const juce::String& playlistName, const juce::String& songName, bool reselect,
+                    const juce::String& changedSong = {});
     void finishLoad (int generation, std::unique_ptr<MBoxPlaylistPlayer> player, const juce::String& error);
     void rebuildIfLoaded (const juce::String& playlistName);
+    void rebuildSongIfLoaded (const juce::String& playlistName, const juce::String& songName);
     void pushMetronomeStates();
     void unloadPlaylist();
     void pushBusToRenderer (int bus);
@@ -433,8 +435,13 @@ MBoxSongPlayer* MBoxCoreAudio::Impl::getRuntimeSong (const juce::String& songNam
 // Loading. The playlist is copied on the message thread, and the copy is turned into a
 // player on the loader thread. A newer load (or the destructor) bumps m_loadGeneration,
 // which cancels an older one and makes its result be discarded.
+//
+// With a changedSong, only that song of the loaded playlist changed: when no other build is
+// pending, the loader rebuilds that song alone on a copy of the running player (sharing the
+// rest), and falls back to a full build if it can't.
 //==============================================================================
-void MBoxCoreAudio::Impl::startLoad (const juce::String& playlistName, const juce::String& songName, bool reselect)
+void MBoxCoreAudio::Impl::startLoad (const juce::String& playlistName, const juce::String& songName, bool reselect,
+                                     const juce::String& changedSong)
 {
     auto* playlist = findPlaylist (playlistName);
     jassert (playlist != nullptr);
@@ -445,6 +452,13 @@ void MBoxCoreAudio::Impl::startLoad (const juce::String& playlistName, const juc
     auto snapshot = std::make_shared<MBoxPlaylist> (*playlist);
     auto banks = std::make_shared<MBoxBanks> (m_banks);
     auto rig = std::make_shared<MBoxRig> (m_rig);
+
+    std::shared_ptr<MBoxPlaylistPlayer> base;
+
+    if (changedSong.isNotEmpty() && ! m_loading && m_loadedPlaylist.equalsIgnoreCase (playlist->getName()))
+        if (auto* running = getRenderer().getPublishedPlayer())
+            base = std::make_shared<MBoxPlaylistPlayer> (*running);
+
     const auto generation = ++m_loadGeneration;
 
     m_loading = true;
@@ -456,14 +470,25 @@ void MBoxCoreAudio::Impl::startLoad (const juce::String& playlistName, const juc
 
     juce::WeakReference<Impl> weakThis (this);
 
-    m_loader.addJob ([this, weakThis, snapshot, banks, rig, generation]
+    m_loader.addJob ([this, weakThis, snapshot, banks, rig, generation, base, changedSong]
     {
         const MBoxPlayerBuildContext context { m_clipCache, m_pluginHost.get(), *banks, *rig,
                                                supportedSampleRate, MBoxRenderer::maxChunkSize, 2.0,
                                                [this, generation] { return generation != m_loadGeneration.load(); },
                                                [this] (float progress) { m_loadProgress = progress; } };
         juce::String error;
-        auto player = buildPlaylistPlayer (*snapshot, context, error);
+        std::unique_ptr<MBoxPlaylistPlayer> player;
+
+        if (base != nullptr)
+        {
+            player = rebuildSongPlayer (*snapshot, changedSong, std::move (*base), context, error);
+
+            if (player == nullptr && error.isEmpty())
+                juce::Logger::writeToLog ("MBoxCoreAudio: " + changedSong + " can't be rebuilt alone: rebuilding the playlist");
+        }
+
+        if (player == nullptr && error.isEmpty())
+            player = buildPlaylistPlayer (*snapshot, context, error);
 
         // std::function needs a copyable callable, so the player travels in a shared holder
         auto holder = std::make_shared<std::unique_ptr<MBoxPlaylistPlayer>> (std::move (player));
@@ -551,6 +576,13 @@ void MBoxCoreAudio::Impl::pushMetronomeStates()
             runtimeSong->m_metronomeState = song->getMetronomeState();
 }
 
+// After an edit of one song only: rebuild that song alone if its playlist is loaded
+void MBoxCoreAudio::Impl::rebuildSongIfLoaded (const juce::String& playlistName, const juce::String& songName)
+{
+    if (m_loadedPlaylist.isNotEmpty() && m_loadedPlaylist.equalsIgnoreCase (playlistName))
+        startLoad (m_loadedPlaylist, m_selectedSong, false, songName);
+}
+
 // Only reached by removing the loaded playlist (or its last song), a setup operation: the
 // empty player is taken before the stop fade runs, so audio playing at that moment is cut.
 void MBoxCoreAudio::Impl::unloadPlaylist()
@@ -619,7 +651,7 @@ std::vector<MBoxEffectChain*> MBoxCoreAudio::Impl::getRuntimeChains (const MBoxE
     {
         case MBoxEffectTarget::Kind::Slot:
             // A slot used on several inputs runs one chain per input; all are kept in sync
-            for (auto& liveInput : player->m_liveInputs)
+            for (auto& [key, liveInput] : player->m_liveInputs)
                 if (auto* chain = liveInput->getSlotChain ({ target.m_bank, target.m_slot }))
                     chains.push_back (chain);
             break;
@@ -1037,7 +1069,7 @@ MBoxResult MBoxCoreAudio::songChanged (const std::string& playlistName, const st
         return MBoxResult::fail ("No song " + songName + " in playlist " + playlistName);
 
     m_impl->markDirty();
-    m_impl->rebuildIfLoaded (playlistName);
+    m_impl->rebuildSongIfLoaded (playlistName, songName);
     return MBoxResult::ok();
 }
 

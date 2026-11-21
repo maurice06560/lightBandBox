@@ -114,24 +114,38 @@ namespace
         std::sort (clicks.begin(), clicks.end());
         return clicks;
     }
-}
 
-std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& playlist,
-                                                         const MBoxPlayerBuildContext& context,
-                                                         juce::String& error)
-{
-    auto playlistPlayer = std::make_unique<MBoxPlaylistPlayer>();
-    playlistPlayer->m_playlistName = playlist.getName();
-
-    // Live inputs are shared by every song of the playlist, keyed by (input channel, n-th
-    // physical track on that input within a song), so a chain keeps running across songs.
-    std::map<std::pair<int, int>, MBoxLiveInput*> liveInputs;
-    const auto& songs = playlist.getSongs();
-
-    for (size_t songIndex = 0; songIndex < songs.size(); ++songIndex)
+    // Whether a running chain built from one effect list can stand for another: the same
+    // plugins in the same order, with the same bypass. The states don't count: the running
+    // plugins hold the current ones (the model gets them before a build).
+    bool samePlugins (const std::vector<MBoxEffect>& a, const std::vector<MBoxEffect>& b)
     {
-        const auto& song = *songs[songIndex];
-        auto player = std::make_unique<MBoxSongPlayer>();
+        return std::equal (a.begin(), a.end(), b.begin(), b.end(), [] (const MBoxEffect& x, const MBoxEffect& y)
+        {
+            return x.m_name == y.m_name && x.m_format == y.m_format && x.m_manufacturer == y.m_manufacturer
+                && x.m_identifier == y.m_identifier && x.m_uniqueId == y.m_uniqueId && x.m_version == y.m_version
+                && x.m_bypassed == y.m_bypassed;
+        });
+    }
+
+    // How buildSong gets its chains and live inputs
+    struct SongBuild
+    {
+        std::map<std::pair<int, int>, std::shared_ptr<MBoxLiveInput>>& m_liveInputs;
+        const MBoxSongPlayer* m_previous { nullptr };  // a single-song rebuild: the running song, to reuse from
+        std::vector<MBoxEffectChain*> m_newInserts;    // created by this build, still to prepare
+        bool m_needsFullBuild { false };               // a single-song rebuild can't do it
+    };
+
+    // Builds one song's player. Without a previous song it creates every chain, and adds live
+    // inputs and slot chains as needed. With one (a single-song rebuild) it reuses the inserts
+    // and mix states of the tracks whose plugins are unchanged, and only uses the live inputs
+    // as they are (they are running): if one is missing, or lacks a slot, m_needsFullBuild is
+    // set. Returns nullptr then, or with an error on failure or cancellation.
+    std::shared_ptr<MBoxSongPlayer> buildSong (const MBoxSong& song, const MBoxPlayerBuildContext& context,
+                                               SongBuild& build, juce::String& error)
+    {
+        auto player = std::make_shared<MBoxSongPlayer>();
         player->m_name = song.getName();
         player->m_timeline = song.getTimeline();
         player->m_leftFrame = player->m_timeline.barToFrames (song.getLeftLocator());
@@ -140,6 +154,7 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
         player->m_endSongAction = song.getEndSongAction();
         buildMetronome (song, *player);
 
+        const auto reusing = build.m_previous != nullptr;
         std::map<int, int> tracksPerInput;
 
         for (const auto& modelTrack : song.getTracks())
@@ -176,14 +191,20 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
                 track.m_diOutput = physical->getDIOutput();
 
                 const std::pair<int, int> key { track.m_physicalInput, tracksPerInput[track.m_physicalInput]++ };
-                auto& liveInput = liveInputs[key];
+                auto found = build.m_liveInputs.find (key);
 
-                if (liveInput == nullptr)
+                if (found == build.m_liveInputs.end())
                 {
-                    playlistPlayer->m_liveInputs.push_back (std::make_unique<MBoxLiveInput>());
-                    liveInput = playlistPlayer->m_liveInputs.back().get();
+                    if (reusing)
+                    {
+                        build.m_needsFullBuild = true;
+                        return nullptr;
+                    }
+
+                    found = build.m_liveInputs.emplace (key, std::make_shared<MBoxLiveInput>()).first;
                 }
 
+                auto* liveInput = found->second.get();
                 track.m_liveInput = liveInput;
 
                 for (const auto& [position, slot] : physical->getBankSlotChanges())
@@ -192,6 +213,12 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
 
                     if (liveInput->getSlotChain (slot) != nullptr)
                         continue;
+
+                    if (reusing)
+                    {
+                        build.m_needsFullBuild = true;
+                        return nullptr;
+                    }
 
                     auto chain = createChain (context, getBankSlot (context.m_banks, slot).m_effectChain, 1, error);
 
@@ -210,21 +237,43 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
             }
 
             const auto numChannels = track.m_type == TrackType::Audio ? 2 : 1;
+            const auto* previousTrack = reusing ? const_cast<MBoxSongPlayer*> (build.m_previous)->findTrack (track.m_trackId) : nullptr;
+
+            if (previousTrack != nullptr && previousTrack->m_type != track.m_type)
+                previousTrack = nullptr;
 
             for (int bus = 1; bus <= numberOfMixBus; ++bus)
             {
+                const auto b = (size_t) bus - 1;
                 const auto* trackMix = song.getTrackMix (bus, track.m_trackId);
-                auto& inserts = track.m_inserts[(size_t) bus - 1];
-                inserts = createChain (context, trackMix != nullptr ? trackMix->m_inserts : std::vector<MBoxEffect> {}, numChannels, error);
+                track.m_insertEffects[b] = trackMix != nullptr ? trackMix->m_inserts : std::vector<MBoxEffect> {};
 
-                if (inserts == nullptr)
+                if (previousTrack != nullptr && samePlugins (previousTrack->m_insertEffects[b], track.m_insertEffects[b]))
                 {
-                    error = where + error;
-                    return nullptr;
+                    track.m_inserts[b] = previousTrack->m_inserts[b];
+                }
+                else
+                {
+                    track.m_inserts[b] = createChain (context, track.m_insertEffects[b], numChannels, error);
+
+                    if (track.m_inserts[b] == nullptr)
+                    {
+                        error = where + error;
+                        return nullptr;
+                    }
+
+                    build.m_newInserts.push_back (track.m_inserts[b].get());
                 }
 
-                auto& mix = track.m_mix[(size_t) bus - 1];
-                mix = std::make_unique<MBoxMixState>();
+                // The running mix state keeps its live values (they change in both places)
+                if (previousTrack != nullptr)
+                {
+                    track.m_mix[b] = previousTrack->m_mix[b];
+                    continue;
+                }
+
+                auto& mix = track.m_mix[b];
+                mix = std::make_shared<MBoxMixState>();
 
                 if (trackMix != nullptr)
                     mix->setFrom (*trackMix);
@@ -235,6 +284,32 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
 
             player->m_tracks.push_back (std::move (track));
         }
+
+        return player;
+    }
+
+    bool isNew (const SongBuild& build, const MBoxEffectChain* chain)
+    {
+        return std::find (build.m_newInserts.begin(), build.m_newInserts.end(), chain) != build.m_newInserts.end();
+    }
+}
+
+std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& playlist,
+                                                         const MBoxPlayerBuildContext& context,
+                                                         juce::String& error)
+{
+    auto playlistPlayer = std::make_unique<MBoxPlaylistPlayer>();
+    playlistPlayer->m_playlistName = playlist.getName();
+
+    SongBuild build { playlistPlayer->m_liveInputs };
+    const auto& songs = playlist.getSongs();
+
+    for (size_t songIndex = 0; songIndex < songs.size(); ++songIndex)
+    {
+        auto player = buildSong (*songs[songIndex], context, build, error);
+
+        if (player == nullptr)
+            return nullptr;
 
         playlistPlayer->m_songs.push_back (std::move (player));
 
@@ -259,24 +334,24 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
     // slot latency, and inserts so that every track path totals m_totalLatency.
     int maxSlotLatency = 0, maxInsertLatency = 0;
 
-    for (auto& liveInput : playlistPlayer->m_liveInputs)
+    for (auto& [key, liveInput] : playlistPlayer->m_liveInputs)
         for (auto* chain : liveInput->getAllChains())
             chain->prepare (context.m_sampleRate, context.m_maxBlockSize);
 
-    for (auto& liveInput : playlistPlayer->m_liveInputs)
+    for (auto& [key, liveInput] : playlistPlayer->m_liveInputs)
         maxSlotLatency = juce::jmax (maxSlotLatency, liveInput->getLatencySamples());
 
-    for (auto& player : playlistPlayer->m_songs)
-        for (auto& track : player->m_tracks)
-            for (auto& inserts : track.m_inserts)
-            {
-                inserts->prepare (context.m_sampleRate, context.m_maxBlockSize);
-                maxInsertLatency = juce::jmax (maxInsertLatency, inserts->getLatencySamples());
-            }
+    for (auto* inserts : build.m_newInserts)
+    {
+        inserts->prepare (context.m_sampleRate, context.m_maxBlockSize);
+        maxInsertLatency = juce::jmax (maxInsertLatency, inserts->getLatencySamples());
+    }
 
+    playlistPlayer->m_maxSlotLatency = maxSlotLatency;
+    playlistPlayer->m_maxInsertLatency = maxInsertLatency;
     playlistPlayer->m_totalLatency = maxSlotLatency + maxInsertLatency;
 
-    for (auto& liveInput : playlistPlayer->m_liveInputs)
+    for (auto& [key, liveInput] : playlistPlayer->m_liveInputs)
         liveInput->prepare (context.m_sampleRate, context.m_maxBlockSize, maxSlotLatency);
 
     for (auto& player : playlistPlayer->m_songs)
@@ -293,7 +368,7 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
 
     //==========================================================================
     // Warm up every plugin now, so the first use in the show makes no noise
-    for (auto& liveInput : playlistPlayer->m_liveInputs)
+    for (auto& [key, liveInput] : playlistPlayer->m_liveInputs)
     {
         if (isCancelled (context))
         {
@@ -304,13 +379,72 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
         liveInput->warmUp (context.m_warmUpSeconds);
     }
 
-    for (auto& player : playlistPlayer->m_songs)
-        for (auto& track : player->m_tracks)
-            for (auto& inserts : track.m_inserts)
-                inserts->warmUp (context.m_warmUpSeconds);
+    for (auto* inserts : build.m_newInserts)
+        inserts->warmUp (context.m_warmUpSeconds);
 
     for (auto& master : playlistPlayer->m_masterChains)
         master->warmUp (context.m_warmUpSeconds);
+
+    if (context.m_onProgress)
+        context.m_onProgress (1.0f);
+
+    return playlistPlayer;
+}
+
+std::unique_ptr<MBoxPlaylistPlayer> rebuildSongPlayer (const MBoxPlaylist& playlist, const juce::String& songName,
+                                                       MBoxPlaylistPlayer base, const MBoxPlayerBuildContext& context,
+                                                       juce::String& error)
+{
+    error.clear();
+    const auto& songs = playlist.getSongs();
+    const auto songIndex = playlist.getSongIndex (songName);
+
+    if (songIndex < 0 || songs.size() != base.m_songs.size())
+        return nullptr;
+
+    for (size_t i = 0; i < songs.size(); ++i)
+        if (base.m_songs[i] == nullptr || ! songs[i]->getName().equalsIgnoreCase (base.m_songs[i]->m_name))
+            return nullptr;
+
+    auto playlistPlayer = std::make_unique<MBoxPlaylistPlayer> (std::move (base));
+    playlistPlayer->m_generation = 0;
+
+    SongBuild build { playlistPlayer->m_liveInputs, playlistPlayer->m_songs[(size_t) songIndex].get() };
+    auto player = buildSong (*songs[(size_t) songIndex], context, build, error);
+
+    if (player == nullptr)
+        return nullptr;
+
+    if (context.m_onProgress)
+        context.m_onProgress (0.5f);
+
+    // The new chains fit in the latency the playlist is padded to, or it takes a full build
+    for (auto* inserts : build.m_newInserts)
+    {
+        inserts->prepare (context.m_sampleRate, context.m_maxBlockSize);
+
+        if (inserts->getLatencySamples() > playlistPlayer->m_maxInsertLatency)
+            return nullptr;
+    }
+
+    for (auto& track : player->m_tracks)
+        for (auto& inserts : track.m_inserts)
+            if (isNew (build, inserts.get()))
+                inserts->setCompensatedLatency (track.m_type == TrackType::Physical ? playlistPlayer->m_maxInsertLatency
+                                                                                    : playlistPlayer->m_totalLatency);
+
+    for (auto* inserts : build.m_newInserts)
+    {
+        if (isCancelled (context))
+        {
+            error = "Cancelled";
+            return nullptr;
+        }
+
+        inserts->warmUp (context.m_warmUpSeconds);
+    }
+
+    playlistPlayer->m_songs[(size_t) songIndex] = std::move (player);
 
     if (context.m_onProgress)
         context.m_onProgress (1.0f);

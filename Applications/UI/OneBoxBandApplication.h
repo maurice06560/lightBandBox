@@ -39,6 +39,7 @@ public:
 
 private:
     void createCore();
+    void openMainWindowWhenLoaded();
     void openMainWindow();
     void takeSnapshotWhenReady (int attemptsLeft);
 

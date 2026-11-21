@@ -57,8 +57,25 @@ void OneBoxBandApplication::createCore()
 
     m_session = std::make_unique<Session> (*m_core);
     m_session->selectFirstSong();  // loads its playlist in the background
+    openMainWindowWhenLoaded();
+}
 
-    m_splash->setStep ("Opening the main window...", 0.9);
+// The splash shows the first playlist's loading; the main window opens once it's ready
+void OneBoxBandApplication::openMainWindowWhenLoaded()
+{
+    if (m_splash == nullptr || m_core == nullptr)
+        return;  // quitting
+
+    const auto info = m_core->getTransportInfo();
+
+    if (info.m_loading)
+    {
+        m_splash->setStep ("Loading " + juce::String (info.m_loadingPlaylist) + "...", 0.3 + 0.6 * info.m_loadingProgress);
+        juce::Timer::callAfterDelay (50, [this] { openMainWindowWhenLoaded(); });
+        return;
+    }
+
+    m_splash->setStep ("Opening the main window...", 0.95);
     juce::MessageManager::callAsync ([this] { openMainWindow(); });
 }
 

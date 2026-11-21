@@ -159,6 +159,8 @@ class MBOX_EXPORT MBoxCoreAudio {
     MBoxSong* getSongInstance (const std::string& playlistName, const std::string& songName);
     MBoxRig* getRig();
     MBoxBank* getBanks();  // an array of numberOfBanks banks
+    // After changing one song (its tracks, cues, locators, tempo, inserts...): saved, and only
+    // that song is rebuilt in the loaded playlist (the whole playlist if it can't be done alone)
     MBoxResult songChanged (const std::string& playlistName, const std::string& songName);
     // After changing only a song's metronome state: saved and applied live, without a rebuild
     MBoxResult metronomeChanged (const std::string& playlistName, const std::string& songName);

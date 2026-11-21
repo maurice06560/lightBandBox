@@ -192,9 +192,12 @@ was also run against the real default CoreAudio device (44100 Hz, 32-sample buff
 
 Known limitations:
 - Slot changes take effect at the start of the audio block containing them (the device block, at most 256 frames), not on their exact frame: up to 0.7 ms late at 32-sample buffers.
-- Changing a plugin chain or a song's structure rebuilds the whole loaded
-  playlist in the background (plugins included, so it takes seconds); playback continues with
-  the previous version until the new one is swapped in. The metronome state changes live.
+- Editing one song (tracks, cues, locators, tempo, inserts) rebuilds only that song: tracks keep
+  their running inserts when their plugins are unchanged, and only new chains are created. It
+  falls back to rebuilding the whole loaded playlist in the background (plugins included, so it
+  takes seconds) when a new chain is longer than the playlist's latency or a live input needs a
+  bank slot it doesn't run yet, and always for rig, bank and song-list changes. Playback continues
+  with the previous version until the new one is swapped in. The metronome state changes live.
 - When pausing, the playhead keeps moving during the 10 ms fade, so it stops about 441 frames later.
 - Removing the loaded playlist while it plays cuts the audio without a fade (a setup operation).
 - The DI output doesn't include the master chains' latency, so it's early by that amount when
