@@ -42,6 +42,10 @@ compile_commands.json
 .cache/
 .clangd/
 
+# Python bytecode (generated)
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
 .AppleDouble
