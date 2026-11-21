@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(MBOX_BUILD_TESTS "Build the MBoxCoreTests unit test runner" ON)
 option(MBOX_BUILD_RACK "Build the headless Rack application (links the MBoxCore shared library)" ON)
+option(MBOX_BUILD_UI "Build the OneBoxBand JUCE UI application (compiles the library in)" ON)
 set(MBOX_ASIO_SDK_DIR "" CACHE PATH "Windows only: the Steinberg ASIO SDK folder (the one containing common/iasiodrv.h)")
 
 add_subdirectory(JUCE)
@@ -123,11 +124,14 @@ if(MBOX_BUILD_TESTS)
         PRIVATE
             Tests/Main.cpp
             Tests/MBoxTestUtilities.cpp
+            Tests/MBoxCoreFeatureTests.cpp
             Tests/MBoxModelTests.cpp
             Tests/MBoxRendererTests.cpp
             Tests/MBoxServerTests.cpp
             Tests/MBoxStorageTests.cpp
-            Tests/MBoxTimelineTests.cpp)
+            Tests/MBoxTimelineTests.cpp
+            Tests/UISessionTests.cpp
+            Applications/UI/Session.cpp)  # the UI's Session, tested against the real library
 
     target_compile_definitions(MBoxCoreTests
         PRIVATE
@@ -148,4 +152,8 @@ endif()
 #===============================================================================
 if(MBOX_BUILD_RACK)
     add_subdirectory(Applications/Rack)
+endif()
+
+if(MBOX_BUILD_UI)
+    add_subdirectory(Applications/UI)
 endif()

@@ -460,6 +460,27 @@ namespace
             return Outcome::from (core.renameSong (playlist, song, newName));
         }
 
+        if (method == M::playFrom)
+        {
+            std::string position;
+
+            if (! getString (params, "position", position))
+                return badParameters ("position");
+
+            return Outcome::from (core.playFrom (position));
+        }
+
+        if (method == M::setMetronomeInMix)
+        {
+            int bus = 0;
+            bool on = true;
+
+            if (! getInt (params, "bus", bus) || ! getBool (params, "on", on))
+                return badParameters ("bus and on");
+
+            return Outcome::from (core.setMetronomeInMix (bus, on));
+        }
+
         if (method == M::play)   return Outcome::from (core.play());
         if (method == M::pause)  return Outcome::from (core.pause());
         if (method == M::stop)   return Outcome::from (core.stop());

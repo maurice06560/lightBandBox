@@ -20,10 +20,10 @@ public:
 
         {
             MBoxCoreAudio core (options);
-            expect (core.getInitialisationResult().wasOk(), core.getInitialisationResult().m_message);
 
             beginTest ("Only one instance per process");
             {
+                expect (core.getInitialisationResult().wasOk(), core.getInitialisationResult().m_message);
                 MBoxCoreAudio second (options);
                 expect (! second.getInitialisationResult().wasOk());
             }

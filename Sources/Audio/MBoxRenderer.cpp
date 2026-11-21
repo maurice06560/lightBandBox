@@ -6,6 +6,13 @@ namespace
 {
     constexpr float minusThreeDb = 0.70710678f;
 
+    // Raises a peak meter (single writer: the audio thread)
+    void raisePeak (std::atomic<float>& meter, float peak) noexcept
+    {
+        if (peak > meter.load (std::memory_order_relaxed))
+            meter.store (peak, std::memory_order_relaxed);
+    }
+
     // Moves a value towards a target by at most maxStep
     float approach (float current, float target, float maxStep) noexcept
     {
@@ -78,12 +85,12 @@ void MBoxRenderer::collectGarbage()
                      m_retired.end());
 }
 
-void MBoxRenderer::pushCommand (CommandType type, int value)
+void MBoxRenderer::pushCommand (CommandType type, int value, std::int64_t frame)
 {
     const auto scope = m_commandFifo.write (1);
 
     if (scope.blockSize1 > 0)
-        m_commands[(size_t) scope.startIndex1] = { type, value };
+        m_commands[(size_t) scope.startIndex1] = { type, value, frame };
     else
         jassertfalse;  // more than 64 commands waiting: the audio callback isn't running
 }
@@ -91,9 +98,11 @@ void MBoxRenderer::pushCommand (CommandType type, int value)
 void MBoxRenderer::play()                       { pushCommand (CommandType::Play); }
 void MBoxRenderer::pause()                      { pushCommand (CommandType::Pause); }
 void MBoxRenderer::stop()                       { pushCommand (CommandType::Stop); }
+void MBoxRenderer::playFrom (std::int64_t frame) { pushCommand (CommandType::PlayFrom, 0, frame); }
 void MBoxRenderer::selectSong (int songIndex)   { pushCommand (CommandType::SelectSong, songIndex); }
 
-void MBoxRenderer::setBus (int bus, std::pair<int, int> outputs, double masterVolumeDb, double masterBalance, double metronomeVolumeDb)
+void MBoxRenderer::setBus (int bus, std::pair<int, int> outputs, double masterVolumeDb, double masterBalance, double metronomeVolumeDb,
+                           bool metronomeOn)
 {
     if (bus < 1 || bus > numberOfMixBus)
         return;
@@ -103,7 +112,17 @@ void MBoxRenderer::setBus (int bus, std::pair<int, int> outputs, double masterVo
     settings.m_right = outputs.second;
     settings.m_masterGain = volumeDbToGain (masterVolumeDb);
     settings.m_masterBalance = (float) juce::jlimit (-1.0, 1.0, masterBalance);
-    settings.m_metronomeGain = volumeDbToGain (metronomeVolumeDb);
+    settings.m_metronomeGain = metronomeOn ? volumeDbToGain (metronomeVolumeDb) : 0.0f;
+}
+
+float MBoxRenderer::takeMasterPeak (int bus) noexcept
+{
+    return bus >= 1 && bus <= numberOfMixBus ? m_buses[(size_t) bus - 1].m_masterPeak.exchange (0.0f) : 0.0f;
+}
+
+float MBoxRenderer::takeMetronomePeak (int bus) noexcept
+{
+    return bus >= 1 && bus <= numberOfMixBus ? m_buses[(size_t) bus - 1].m_metronomePeak.exchange (0.0f) : 0.0f;
 }
 
 MBoxRenderer::Status MBoxRenderer::getStatus() const noexcept
@@ -171,6 +190,23 @@ void MBoxRenderer::handleCommands() noexcept
                 m_pendingSongIndex = -1;
                 break;
 
+            case CommandType::PlayFrom:
+                if (! hasSongs)
+                    break;
+
+                m_pendingSongIndex = -1;
+
+                if (m_state == TransportState::Playing)
+                {
+                    m_playFromFrame = command.m_frame;
+                    startFadeOut (AfterFade::PlayFrom);
+                }
+                else
+                {
+                    startPlayingFrom (command.m_frame);
+                }
+                break;
+
             case CommandType::Pause:
                 if (m_state == TransportState::Playing)
                     startFadeOut (AfterFade::Pause);
@@ -211,6 +247,17 @@ void MBoxRenderer::handleCommands() noexcept
     for (int i = 0; i < scope.blockSize2; ++i)  handle (m_commands[(size_t) (scope.startIndex2 + i)]);
 }
 
+// Starts playing the current song at a frame, fading in. The count-in plays only from the left locator.
+void MBoxRenderer::startPlayingFrom (std::int64_t frame) noexcept
+{
+    const auto& song = *m_active->m_songs[(size_t) m_songIndex];
+    m_position = frame == song.m_leftFrame ? frame - song.m_preRollFrames : frame;
+    m_gain = 0.0f;
+    m_state = TransportState::Playing;
+    m_targetGain = 1.0f;
+    m_afterFade = AfterFade::Nothing;
+}
+
 void MBoxRenderer::startFadeOut (AfterFade action) noexcept
 {
     m_targetGain = 0.0f;
@@ -222,6 +269,12 @@ void MBoxRenderer::startFadeOut (AfterFade action) noexcept
 void MBoxRenderer::finishFadeOut() noexcept
 {
     m_gain = m_targetGain = 0.0f;
+
+    if (m_afterFade == AfterFade::PlayFrom)
+    {
+        startPlayingFrom (m_playFromFrame);
+        return;
+    }
 
     if (m_afterFade == AfterFade::Pause)
     {
@@ -375,6 +428,12 @@ void MBoxRenderer::renderSegment (MBoxSongPlayer& song, const float* const* inpu
         juce::FloatVectorOperations::addWithMultiply (left, click, metronomeGain, numFrames);
         juce::FloatVectorOperations::addWithMultiply (right, click, metronomeGain, numFrames);
 
+        if (metronomeGain > 0.0f)
+        {
+            const auto range = juce::FloatVectorOperations::findMinAndMax (click, numFrames);
+            raisePeak (settings.m_metronomePeak, juce::jmax (-range.getStart(), range.getEnd()) * metronomeGain);
+        }
+
         float* busChannels[] = { left, right };
         m_active->m_masterChains[(size_t) bus]->process (busChannels, numFrames);
 
@@ -393,6 +452,7 @@ void MBoxRenderer::renderSegment (MBoxSongPlayer& song, const float* const* inpu
         auto* outLeft = outputs[leftChannel] + offset;
         const bool isStereo = juce::isPositiveAndBelow (rightChannel, numOutputs) && outputs[rightChannel] != nullptr;
         auto* outRight = isStereo ? outputs[rightChannel] + offset : nullptr;
+        float peak = 0.0f;
 
         for (int i = 0; i < numFrames; ++i)
         {
@@ -400,14 +460,21 @@ void MBoxRenderer::renderSegment (MBoxSongPlayer& song, const float* const* inpu
 
             if (isStereo)
             {
-                outLeft[i] += left[i] * gain * balanceLeft;
-                outRight[i] += right[i] * gain * balanceRight;
+                const auto l = left[i] * gain * balanceLeft;
+                const auto r = right[i] * gain * balanceRight;
+                outLeft[i] += l;
+                outRight[i] += r;
+                peak = juce::jmax (peak, std::abs (l), std::abs (r));
             }
             else
             {
-                outLeft[i] += (left[i] + right[i]) * minusThreeDb * gain;
+                const auto m = (left[i] + right[i]) * minusThreeDb * gain;
+                outLeft[i] += m;
+                peak = juce::jmax (peak, std::abs (m));
             }
         }
+
+        raisePeak (settings.m_masterPeak, peak);
     }
 }
 
@@ -477,13 +544,20 @@ void MBoxRenderer::mixIntoBus (MBoxSongPlayer::Track& track, int busIndex, bool 
     const auto* sourceLeft = m_insertBuffer.getReadPointer (0);
     const auto* sourceRight = m_insertBuffer.getReadPointer (numChannels - 1);
 
+    float peak = 0.0f;
+
     for (int i = 0; i < numFrames; ++i)
     {
         const auto t = (float) i / (float) numFrames;
         const auto gain = startGain + (endGain - startGain) * t;
-        busLeft[i]  += sourceLeft[i]  * gain * (startLeft + (endLeft - startLeft) * t);
-        busRight[i] += sourceRight[i] * gain * (startRight + (endRight - startRight) * t);
+        const auto l = sourceLeft[i]  * gain * (startLeft + (endLeft - startLeft) * t);
+        const auto r = sourceRight[i] * gain * (startRight + (endRight - startRight) * t);
+        busLeft[i]  += l;
+        busRight[i] += r;
+        peak = juce::jmax (peak, std::abs (l), std::abs (r));
     }
+
+    raisePeak (mix.m_peak, peak);
 }
 
 // The play/pause/stop fade, applied to everything this segment wrote

@@ -44,6 +44,9 @@ public:
     // The open device, as it would be saved. Empty names when no device is open.
     MBoxDeviceSettings getCurrentDeviceSettings() const;
     juce::Array<int> getAvailableBufferSizes() const;
+    // The names of the open device's input or output channels (the engine opens all of them).
+    // Without a device: the null device's ("Input 1", "Input 2", "Output 1"...).
+    juce::StringArray getChannelNames (bool input) const;
     double getSampleRate() const;
 
     // Opens another device. Empty names mean the type's default devices, an empty type the

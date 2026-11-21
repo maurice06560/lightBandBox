@@ -270,6 +270,7 @@ juce::var MBoxStorage::rigToJson (const MBoxRig& rig)
         set (busJson, "masterVolume", bus.getMasterVolume());
         set (busJson, "masterBalance", bus.getMasterBalance());
         set (busJson, "metronomeVolume", bus.getMetronomeVolume());
+        set (busJson, "metronomeOn", bus.isMetronomeOn());
         set (busJson, "masterEffects", effectsToJson (bus.getMasterEffectChain()));
         buses.add (busJson);
     }
@@ -317,6 +318,7 @@ juce::Result MBoxStorage::rigFromJson (const juce::var& json, MBoxRig& rig)
         bus.setMasterVolume (get (busJson, "masterVolume", 0.0));
         bus.setMasterBalance (get (busJson, "masterBalance", 0.0));
         bus.setMetronomeVolume (get (busJson, "metronomeVolume", 0.0));
+        bus.setMetronomeOn (get (busJson, "metronomeOn", true));
 
         if (auto result = effectsFromJson (get (busJson, "masterEffects"), bus.getMasterEffectChain()); result.failed())
             return juce::Result::fail ("rig.json: mix bus " + juce::String (id) + ": " + result.getErrorMessage());

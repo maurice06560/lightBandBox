@@ -8,11 +8,13 @@
 #include <utility>
 
 //==============================================================================
-// The metronome's level in one mix bus, in dB. Whether it clicks is set per song.
+// The metronome in one mix bus: its level in dB, and whether it plays there at all. Whether
+// it clicks is set per song (MetronomeState); a bus with m_on false never hears it.
 //==============================================================================
 struct MBoxMetronome
 {
     double m_volume { 0.0 };
+    bool m_on { true };
 };
 
 //==============================================================================
@@ -41,6 +43,8 @@ public:
     double getMasterBalance() const noexcept  { return m_masterBalance; }
     void setMetronomeVolume (double volumeDb) noexcept;
     double getMetronomeVolume() const noexcept  { return m_metronome.m_volume; }
+    void setMetronomeOn (bool on) noexcept      { m_metronome.m_on = on; }
+    bool isMetronomeOn() const noexcept         { return m_metronome.m_on; }
 
     std::vector<MBoxEffect>& getMasterEffectChain() noexcept              { return m_masterEffectChain; }
     const std::vector<MBoxEffect>& getMasterEffectChain() const noexcept  { return m_masterEffectChain; }

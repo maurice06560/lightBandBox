@@ -12,6 +12,7 @@ public:
 
     void runTest() override
     {
+        beginTest ("Test WAVs");   // expect() needs an open test group
         MBoxTest::TemporaryDirectory temp;
         const auto wav = temp.m_directory.getChildFile ("dc.wav");
         expect (MBoxTest::writeWav (wav, 4 * 44100, [] (auto) { return std::pair { 0.5f, -0.25f }; }).wasOk());
@@ -187,6 +188,70 @@ public:
             first.m_mix[0]->m_solo = false;
             second.m_mix[0]->m_gain = volumeDbToGain (-6.0206);
             expectWithinAbsoluteError (MBoxTest::render (renderer, 1024).getSample (0, 1000), 0.375f, 1.0e-4f);
+        }
+
+        beginTest ("playFrom starts anywhere, with the count-in only at the left locator, and jumps while playing");
+        {
+            MBoxPlaylist playlist ("P");
+            playlist.addSong ("Song");
+            auto& song = *playlist.getSongInstance ("Song");
+            song.setMetronomeState (MetronomeState::FourCountdownOnly);
+            addAudioTrack (song, wav, { 2, 1, 1, 0 });
+            MBoxRenderer renderer;
+            load (renderer, playlist);
+
+            // Inside the WAV: sound at once (after the 10 ms fade-in), no count-in
+            renderer.playFrom (bar + beat);
+            auto output = MBoxTest::render (renderer, 2000);
+            expectEquals (output.getSample (0, fade + 10), 0.5f);
+            expectEquals (renderer.getStatus().m_position, (std::int64_t) (bar + beat + 2000));
+
+            // While playing: fades out, then jumps back to bar 1 (before the WAV: silence)
+            renderer.playFrom (bar / 2);
+            output = MBoxTest::render (renderer, 2 * fade);
+            expectLessThan (std::abs (output.getSample (0, fade + 10)), 0.01f);
+            expect (renderer.getStatus().m_state == TransportState::Playing);
+            expectLessThan (renderer.getStatus().m_position, (std::int64_t) bar);
+
+            // From the left locator: the count-in plays first
+            renderer.stop();
+            MBoxTest::render (renderer, 1024);
+            renderer.playFrom (0);
+            MBoxTest::render (renderer, 100);
+            expectLessThan (renderer.getStatus().m_position, (std::int64_t) 0);
+        }
+
+        beginTest ("Meters: track, master and metronome peaks, reset when taken; the click per bus");
+        {
+            MBoxPlaylist playlist ("P");
+            playlist.addSong ("Song");
+            auto& song = *playlist.getSongInstance ("Song");
+            song.setMetronomeState (MetronomeState::On);
+            addAudioTrack (song, quarter, { 1, 1, 1, 0 });
+            MBoxRenderer renderer;
+            auto* player = load (renderer, playlist);
+            auto& mix = *player->m_songs[0]->m_tracks[0].m_mix[0];
+
+            expectEquals (renderer.takeMasterPeak (1), 0.0f);
+            renderer.play();
+            MBoxTest::render (renderer, 4 * beat + 2048);
+            expectWithinAbsoluteError (mix.takePeak(), 0.25f, 1.0e-4f);
+            expectEquals (mix.takePeak(), 0.0f);
+            expectGreaterThan (renderer.takeMasterPeak (1), 0.25f);
+            expectGreaterThan (renderer.takeMetronomePeak (1), 0.0f);
+            expectEquals (renderer.takeMetronomePeak (1), 0.0f);
+
+            // The click switched off in bus 1 only
+            renderer.setBus (1, { 0, 1 }, 0.0, 0.0, 0.0, false);
+            mix.m_mute = true;
+            for (int bus = 1; bus <= numberOfMixBus; ++bus)
+                renderer.takeMetronomePeak (bus);
+
+            const auto output = MBoxTest::render (renderer, 2 * bar);
+            expectEquals (renderer.takeMetronomePeak (1), 0.0f);
+            expectGreaterThan (renderer.takeMetronomePeak (2), 0.0f);
+            expectGreaterThan (peak (output, 0, 2 * bar), -1.0f);
+            expectEquals (output.getMagnitude (0, 1024, 2 * bar - 1024), 0.0f);   // bus 1: muted track, no click
         }
 
         beginTest ("Live inputs: pan, DI output, mono bus, master volume, silent when stopped");

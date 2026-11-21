@@ -383,6 +383,11 @@ void MBoxCoreAudio::Impl::captureTouchedEffectStates()
             juce::MemoryBlock state;
             plugin->getStateInformation (state);
             (*effects)[(size_t) touched.m_effectIndex].m_state = state;
+
+            // A slot used on several inputs: the other instances follow the edited one
+            for (size_t i = 1; i < chains.size(); ++i)
+                if (auto* other = chains[i]->getPlugin (touched.m_effectIndex))
+                    other->setStateInformation (state.getData(), (int) state.getSize());
         }
     }
 
@@ -432,6 +437,9 @@ void MBoxCoreAudio::Impl::startLoad (const juce::String& playlistName, const juc
 {
     auto* playlist = findPlaylist (playlistName);
     jassert (playlist != nullptr);
+
+    // Settings changed in plugin editors go into the snapshot
+    captureTouchedEffectStates();
 
     auto snapshot = std::make_shared<MBoxPlaylist> (*playlist);
     auto banks = std::make_shared<MBoxBanks> (m_banks);
@@ -537,13 +545,20 @@ void MBoxCoreAudio::Impl::unloadPlaylist()
     getRenderer().publish (nullptr);
     m_loadedPlaylist = {};
     m_selectedSong = {};
+
+    // Nothing is loaded any more (the running plugins are gone)
+    auto data = makeObject();
+    set (data, "playlist", juce::String());
+    set (data, "ok", true);
+    set (data, "error", juce::String());
+    emit (MBoxComAPI::Event::playlistLoaded, data);
 }
 
 void MBoxCoreAudio::Impl::pushBusToRenderer (int bus)
 {
     const auto& settings = m_rig.m_mixBuses[(size_t) bus - 1];
     getRenderer().setBus (bus, settings.getOutputs(), settings.getMasterVolume(), settings.getMasterBalance(),
-                          settings.getMetronomeVolume());
+                          settings.getMetronomeVolume(), settings.isMetronomeOn());
 }
 
 //==============================================================================
@@ -657,6 +672,7 @@ MBoxResult MBoxCoreAudio::Impl::changeBus (int bus, const std::function<void (MB
     set (data, "masterVolume", settings.getMasterVolume());
     set (data, "masterBalance", settings.getMasterBalance());
     set (data, "metronomeVolume", settings.getMetronomeVolume());
+    set (data, "metronomeOn", settings.isMetronomeOn());
     emit (MBoxComAPI::Event::mixChanged, data);
     return MBoxResult::ok();
 }
@@ -802,6 +818,48 @@ MBoxResult MBoxCoreAudio::renamePlaylist (const std::string& playlistName, const
 //==============================================================================
 // Songs
 //==============================================================================
+MBoxResult MBoxCoreAudio::copyPlaylist (const std::string& playlistName, const std::string& newName)
+{
+    auto* playlist = m_impl->findPlaylist (playlistName);
+
+    if (playlist == nullptr)
+        return MBoxResult::fail ("No playlist " + playlistName);
+
+    if (const auto result = validateItemName (newName); result.failed())
+        return toResult (result);
+
+    if (m_impl->findPlaylist (newName) != nullptr)
+        return MBoxResult::fail ("A playlist named " + newName + " already exists");
+
+    if (m_impl->m_readOnly)
+        return MBoxResult::fail ("The data folder is read-only: it failed to load, or another instance owns it");
+
+    const auto& storage = *m_impl->m_storage;
+    const auto from = storage.getPlaylistDirectory (playlist->getName());
+    const auto to = storage.getPlaylistDirectory (newName);
+
+    if (to.exists())
+        return MBoxResult::fail ("A folder named " + newName + " already exists in the data folder");
+
+    // The songs' files (WAVs) come along, so the copy is independent
+    if (from.isDirectory() && ! from.copyDirectoryTo (to))
+        return MBoxResult::fail ("Unable to copy the folder of " + playlistName);
+
+    auto copy = std::make_unique<MBoxPlaylist> (*playlist);
+
+    if (const auto result = copy->rename (newName); result.failed())
+        return toResult (result);
+
+    for (const auto& songName : copy->getSongNames())
+        rebaseAudioFiles (*copy->getSongInstance (songName), from, to);
+
+    auto& playlists = m_impl->m_playlists;
+    const auto position = std::find_if (playlists.begin(), playlists.end(), [&] (const auto& p) { return p.get() == playlist; });
+    playlists.insert (std::next (position), std::move (copy));
+    m_impl->markDirty();
+    return MBoxResult::ok();
+}
+
 MBoxResult MBoxCoreAudio::addSong (const std::string& playlistName, const std::string& songName)
 {
     auto* playlist = m_impl->findPlaylist (playlistName);
@@ -955,6 +1013,7 @@ MBoxSong* MBoxCoreAudio::getSongInstance (const std::string& playlistName, const
 MBoxRig* MBoxCoreAudio::getRig()                    { return &m_impl->m_rig; }
 MBoxBank* MBoxCoreAudio::getBanks()                 { return m_impl->m_banks.data(); }
 MBoxAudioEngine* MBoxCoreAudio::getAudioEngine()    { return m_impl->m_audioEngine.get(); }
+MBoxPluginHost* MBoxCoreAudio::getPluginHost()      { return m_impl->m_pluginHost.get(); }
 
 MBoxResult MBoxCoreAudio::songChanged (const std::string& playlistName, const std::string& songName)
 {
@@ -964,6 +1023,56 @@ MBoxResult MBoxCoreAudio::songChanged (const std::string& playlistName, const st
     m_impl->markDirty();
     m_impl->rebuildIfLoaded (playlistName);
     return MBoxResult::ok();
+}
+
+MBoxResult MBoxCoreAudio::importAudioFile (const std::string& playlistName, const std::string& songName, int trackId,
+                                           const std::string& filePath)
+{
+    auto* playlist = m_impl->findPlaylist (playlistName);
+    auto* song = playlist != nullptr ? playlist->getSongInstance (songName) : nullptr;
+
+    if (song == nullptr)
+        return MBoxResult::fail ("No song " + songName + " in playlist " + playlistName);
+
+    if (dynamic_cast<MBoxAudioTrack*> (song->getTrack (trackId)) == nullptr)
+        return MBoxResult::fail ("No audio track " + std::to_string (trackId));
+
+    if (m_impl->m_readOnly)
+        return MBoxResult::fail ("The data folder is read-only: it failed to load, or another instance owns it");
+
+    const juce::File source { juce::String (filePath) };
+
+    if (! source.existsAsFile())
+        return MBoxResult::fail ("No file " + filePath);
+
+    // Checks the format before copying anything (the track keeps its file on failure)
+    MBoxSong check (*song);
+
+    if (const auto result = check.setAudioFile (trackId, source); result.failed())
+        return toResult (result);
+
+    const auto mediaDirectory = m_impl->m_storage->getMediaDirectory (playlist->getName(), song->getName());
+    auto destination = mediaDirectory.getChildFile (source.getFileName());
+
+    if (destination != source)
+    {
+        if (destination.existsAsFile() && ! destination.hasIdenticalContentTo (source))
+            destination = destination.getNonexistentSibling();
+
+        if (! destination.existsAsFile())
+        {
+            if (const auto result = mediaDirectory.createDirectory(); result.failed())
+                return toResult (result);
+
+            if (! source.copyFileTo (destination))
+                return MBoxResult::fail ("Unable to copy " + filePath + " to " + destination.getFullPathName().toStdString());
+        }
+    }
+
+    if (const auto result = song->setAudioFile (trackId, destination); result.failed())
+        return toResult (result);
+
+    return songChanged (playlistName, songName);
 }
 
 MBoxResult MBoxCoreAudio::rigChanged()
@@ -1012,6 +1121,26 @@ MBoxResult MBoxCoreAudio::pause()
 MBoxResult MBoxCoreAudio::stop()
 {
     m_impl->getRenderer().stop();
+    return MBoxResult::ok();
+}
+
+MBoxResult MBoxCoreAudio::playFrom (const std::string& position)
+{
+    if (m_impl->m_loading)
+        return MBoxResult::fail ("A playlist is loading");
+
+    auto* song = m_impl->getSelectedSong();
+
+    if (song == nullptr)
+        return MBoxResult::fail ("No playlist loaded: select a song first");
+
+    Bar bar;
+    const auto timeline = song->getTimeline();
+
+    if (! Bar::fromString (position, bar) || ! timeline.isValidPosition (bar))
+        return MBoxResult::fail ("Invalid position " + position);
+
+    m_impl->getRenderer().playFrom (timeline.barToFrames (bar));
     return MBoxResult::ok();
 }
 
@@ -1079,6 +1208,26 @@ MBoxResult MBoxCoreAudio::setMetronomeVolume (int bus, double volumeDb)
 {
     return m_impl->changeBus (bus, [&] (MBoxMixBus& settings) { settings.setMetronomeVolume (volumeDb); });
 }
+
+MBoxResult MBoxCoreAudio::setMetronomeInMix (int bus, bool on)
+{
+    return m_impl->changeBus (bus, [on] (MBoxMixBus& b) { b.setMetronomeOn (on); });
+}
+
+float MBoxCoreAudio::takeTrackPeak (int bus, int trackId)
+{
+    if (bus < 1 || bus > numberOfMixBus)
+        return 0.0f;
+
+    if (auto* song = m_impl->getRuntimeSong (m_impl->m_selectedSong))
+        if (auto* track = song->findTrack (trackId))
+            return track->m_mix[(size_t) bus - 1]->takePeak();
+
+    return 0.0f;
+}
+
+float MBoxCoreAudio::takeMasterPeak (int bus)     { return m_impl->getRenderer().takeMasterPeak (bus); }
+float MBoxCoreAudio::takeMetronomePeak (int bus)  { return m_impl->getRenderer().takeMetronomePeak (bus); }
 
 MBoxResult MBoxCoreAudio::setMetronomeState (const std::string& state)
 {
@@ -1198,6 +1347,39 @@ MBoxResult MBoxCoreAudio::setEffectBypass (const MBoxEffectTarget& target, int e
     return MBoxResult::ok();
 }
 
+std::vector<juce::AudioPluginInstance*> MBoxCoreAudio::getRunningPlugins (const MBoxEffectTarget& target, int effectIndex)
+{
+    std::vector<juce::AudioPluginInstance*> plugins;
+
+    for (auto* chain : m_impl->getRuntimeChains (target, m_impl->m_selectedSong))
+        if (auto* plugin = chain->getPlugin (effectIndex))
+            plugins.push_back (plugin);
+
+    return plugins;
+}
+
+MBoxResult MBoxCoreAudio::effectChanged (const MBoxEffectTarget& target, int effectIndex)
+{
+    auto* effects = m_impl->getModelEffects (target, m_impl->m_loadedPlaylist, m_impl->m_selectedSong);
+
+    if (effects == nullptr || ! juce::isPositiveAndBelow (effectIndex, (int) effects->size()))
+        return MBoxResult::fail ("No effect " + std::to_string (effectIndex) + " there");
+
+    auto& touched = m_impl->m_touchedEffects;
+    const auto already = std::any_of (touched.begin(), touched.end(), [&] (const auto& t)
+    {
+        return t.m_effectIndex == effectIndex && t.m_target.m_kind == target.m_kind && t.m_target.m_bank == target.m_bank
+            && t.m_target.m_slot == target.m_slot && t.m_target.m_bus == target.m_bus && t.m_target.m_track == target.m_track
+            && t.m_playlist == m_impl->m_loadedPlaylist && t.m_song == m_impl->m_selectedSong;
+    });
+
+    if (! already)
+        touched.push_back ({ target, effectIndex, m_impl->m_loadedPlaylist, m_impl->m_selectedSong });
+
+    m_impl->markDirty();
+    return MBoxResult::ok();
+}
+
 MBoxResult MBoxCoreAudio::scanForPlugins()
 {
     return toResult (m_impl->m_pluginHost->scanForPlugins());
@@ -1225,6 +1407,10 @@ MBoxDeviceInfo MBoxCoreAudio::getCurrentDevice() const
     info.m_outputDevice = settings.m_outputDeviceName.toStdString();
     info.m_bufferSize = settings.m_bufferSize;
     info.m_sampleRate = m_impl->m_audioEngine->getSampleRate();
+    info.m_inputNames = toStdStrings (m_impl->m_audioEngine->getChannelNames (true));
+    info.m_outputNames = toStdStrings (m_impl->m_audioEngine->getChannelNames (false));
+    info.m_numInputs = (int) info.m_inputNames.size();
+    info.m_numOutputs = (int) info.m_outputNames.size();
     return info;
 }
 

@@ -54,6 +54,8 @@ namespace MBoxComAPI
         constexpr const char* play = "play";
         constexpr const char* pause = "pause";
         constexpr const char* stop = "stop";
+        // params: position ("bar.beat.division.tick"). Plays the selected song from there
+        constexpr const char* playFrom = "playFrom";
         // params: bus. result: tracks: [{trackId, name, type, volume, balance, mute, solo}]
         constexpr const char* getMix = "getMix";
         // params: bus, track, and volume (dB) / balance (-1..1) / mute (bool) / solo (bool)
@@ -68,6 +70,8 @@ namespace MBoxComAPI
         constexpr const char* setMetronomeVolume = "setMetronomeVolume";
         // params: state ("off", "fourCountdownOnly", "on"), for the selected song
         constexpr const char* setMetronomeState = "setMetronomeState";
+        // params: bus, on (bool). Whether the click plays in that mix at all (rack-wide)
+        constexpr const char* setMetronomeInMix = "setMetronomeInMix";
         // params: target. result: effects: [{name, manufacturer, bypassed}]
         // target: {"slot": {"bank": b, "slot": s}}, {"insert": {"bus": b, "track": t}} or {"master": {"bus": b}}
         constexpr const char* getEffects = "getEffects";
@@ -88,7 +92,8 @@ namespace MBoxComAPI
         constexpr const char* transport = "transport";
         // playlist, progress (0..1)
         constexpr const char* playlistLoading = "playlistLoading";
-        // playlist, ok: bool, error: string
+        // playlist, ok: bool, error: string. An empty playlist: nothing is loaded any more
+        // (the loaded playlist, or its last song, was removed)
         constexpr const char* playlistLoaded = "playlistLoaded";
         // playlist, song
         constexpr const char* songChanged = "songChanged";

@@ -23,6 +23,10 @@ struct MBoxMixState
     std::atomic<bool> m_mute { false };
     std::atomic<bool> m_solo { false };
 
+    // The highest sample level (linear) this track sent to the bus since the last takePeak()
+    std::atomic<float> m_peak { 0.0f };
+    float takePeak() noexcept  { return m_peak.exchange (0.0f); }
+
     // Audio thread only
     float m_currentGain { 1.0f };
     float m_currentBalance { 0.0f };

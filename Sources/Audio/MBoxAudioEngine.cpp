@@ -279,6 +279,19 @@ MBoxDeviceSettings MBoxAudioEngine::getCurrentDeviceSettings() const
     return settings;
 }
 
+juce::StringArray MBoxAudioEngine::getChannelNames (bool input) const
+{
+    if (auto* device = m_deviceManager.getCurrentAudioDevice(); device != nullptr && m_nullDevice == nullptr)
+        return input ? device->getInputChannelNames() : device->getOutputChannelNames();
+
+    juce::StringArray names;
+
+    for (int channel = 1; channel <= (input ? 2 : numberOfMixBus * 2); ++channel)
+        names.add ((input ? "Input " : "Output ") + juce::String (channel));
+
+    return names;
+}
+
 juce::Array<int> MBoxAudioEngine::getAvailableBufferSizes() const
 {
     if (auto* device = m_deviceManager.getCurrentAudioDevice())

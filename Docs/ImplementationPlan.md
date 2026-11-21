@@ -201,3 +201,9 @@ Known limitations:
   master chains add latency.
 - If the device can't run at 44100 Hz, the engine still opens it (logging a warning) and WAVs
   play at the wrong speed.
+
+## Phase 9: JUCE UI port
+
+Port the previous implementation's UI (`Applications/UI`, `Modules/onebox_ui`) to `MBoxCoreAudio`,
+linking `MBoxCoreEmbedded`. Analysis, decisions and order: `Docs/UIPortPlan.md`. Steps 1 to 4
+done (the tuner and the bank-slot loudness are postponed).

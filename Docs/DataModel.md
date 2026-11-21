@@ -249,7 +249,9 @@ class IAudioEffectInstance
   `m_masterEffectChain`, `m_masterVolume`, `m_masterBalance`, and the metronome volume.
 - Per song, saved in `song.json`: `MBoxSong` owns
   `std::array<std::vector<MBoxTrackMix>, numberOfMixBus> m_mixes;` and the metronome state.
-- The metronome state is one value per song, shared by all mixes.
+- The metronome state is one value per song, shared by all mixes. Each mix bus (rack-wide,
+  `metronomeOn` in `rig.json`, on by default) also says whether the click (count-in included)
+  plays in it. The metronome has no tone setting.
 - `MBoxTrackMix` refers to its track by `m_trackId`, not `MBoxTrack*`, and gains
   `bool m_mute { false };` and `bool m_solo { false };` (saved). Solos add up: every soloed track
   of the bus plays.

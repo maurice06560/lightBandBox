@@ -11,7 +11,9 @@
 // Forward declarations keep JUCE out of the library's public header. These classes are only
 // usable by apps that compile the library in (MBoxCoreEmbedded, the UI app).
 class MBoxAudioEngine;
+class MBoxPluginHost;
 class MBoxSong;
+namespace juce { class AudioPluginInstance; }
 struct MBoxRig;
 struct MBoxBank;
 
@@ -61,6 +63,8 @@ struct MBOX_EXPORT MBoxDeviceInfo
     double m_sampleRate { 0.0 };
     int m_numInputs { 0 };
     int m_numOutputs { 0 };
+    std::vector<std::string> m_inputNames;   // one per input channel
+    std::vector<std::string> m_outputNames;  // one per output channel
 };
 
 // Which effect chain an effect call refers to. Numbers are 1-based.
@@ -133,6 +137,9 @@ class MBOX_EXPORT MBoxCoreAudio {
     std::vector<std::string> getPlaylistNames() const;
     MBoxResult movePlaylistPosition (const std::string& name, int to);
     MBoxResult renamePlaylist (const std::string& playlistName, const std::string& newName);
+    // Adds a deep copy of a playlist (songs, mixes, inserts) named newName after it, with copies
+    // of its songs' files in a folder of its own
+    MBoxResult copyPlaylist (const std::string& playlistName, const std::string& newName);
 
     MBoxResult addSong (const std::string& playlistName, const std::string& songName);
     MBoxResult removeSong (const std::string& playlistName, const std::string& songName);
@@ -155,6 +162,14 @@ class MBOX_EXPORT MBoxCoreAudio {
     MBoxResult rigChanged();
     MBoxResult banksChanged();
     MBoxAudioEngine* getAudioEngine();
+    MBoxPluginHost* getPluginHost();
+
+    // Copies a WAV (44100 Hz, 16-bit stereo) into the song's media folder, so the data folder
+    // holds every file it plays, and makes it the file of an audio track. A different file with
+    // the same name already there is kept: the copy gets a new name. Fails, copying nothing,
+    // when the file isn't supported or the track isn't an audio track.
+    MBoxResult importAudioFile (const std::string& playlistName, const std::string& songName, int trackId,
+                                const std::string& filePath);
 
     // Writes the data folder now
     MBoxResult save();
@@ -164,6 +179,9 @@ class MBOX_EXPORT MBoxCoreAudio {
     MBoxResult play();
     MBoxResult pause();
     MBoxResult stop();
+    // Plays the selected song from a position "bar.beat.division.tick" (with the count-in when
+    // it's the left locator); while playing, fades out first, then jumps there
+    MBoxResult playFrom (const std::string& position);
     MBoxTransportInfo getTransportInfo() const;
 
     //==========================================================================
@@ -175,11 +193,20 @@ class MBOX_EXPORT MBoxCoreAudio {
     MBoxResult setBusVolume (int bus, double volumeDb);
     MBoxResult setBusBalance (int bus, double balance);
     MBoxResult setMetronomeVolume (int bus, double volumeDb);
+    // Whether the metronome plays in a bus at all (rack-wide, saved in rig.json)
+    MBoxResult setMetronomeInMix (int bus, bool on);
     // "off", "fourCountdownOnly" or "on", for the selected song
     MBoxResult setMetronomeState (const std::string& state);
     // The selected song's mix of one bus, as a JSON array of
     // {trackId, name, type, volume, balance, mute, solo}
     std::string getMixJson (int bus) const;
+
+    // Meters: the highest sample level (linear, 1.0 = full scale) since the previous call, of a
+    // track of the selected song in a bus, of a bus's output, and of the metronome in a bus.
+    // 0 when stopped or unknown. Call regularly (a UI timer): each call resets the peak.
+    float takeTrackPeak (int bus, int trackId);
+    float takeMasterPeak (int bus);
+    float takeMetronomePeak (int bus);
 
     //==========================================================================
     // Effects. Parameter calls need the playlist to be loaded, since they act on the running
@@ -191,6 +218,16 @@ class MBOX_EXPORT MBoxCoreAudio {
 
     // Scans the installed plugins and saves the list (slow, UI only)
     MBoxResult scanForPlugins();
+
+    // For plugin editors (embedded apps only): the running instances of an effect, the one to
+    // show first. A bank slot used on several inputs runs one instance per input. Empty when
+    // the effect doesn't run (its playlist isn't loaded). Inserts are the selected song's.
+    // The instances are replaced whenever the loaded playlist is rebuilt (playlistLoaded event).
+    std::vector<juce::AudioPluginInstance*> getRunningPlugins (const MBoxEffectTarget& target, int effectIndex);
+    // Tells the library a plugin's settings were changed in its editor: its state is copied
+    // into the model (and to its other running instances) before the next save or rebuild.
+    // For an effect that isn't running, set MBoxEffect::m_state in the model first.
+    MBoxResult effectChanged (const MBoxEffectTarget& target, int effectIndex);
 
     //==========================================================================
     // Audio devices. A selected device and buffer size are saved and reopened at startup.

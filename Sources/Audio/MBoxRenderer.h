@@ -24,6 +24,8 @@
 // - play() from Stopped starts at "left locator - count-in", fading in over 10 ms.
 // - pause() and stop() fade out over 10 ms first. Pause keeps the position; stop returns it
 //   to the left locator. play() after a pause fades back in from where it stopped.
+// - playFrom() starts at any position (with the count-in only when it's the left locator);
+//   while playing, it fades out first, then jumps.
 // - At the right locator: Stop (or the last song) fades out and stops; Continue jumps to the
 //   next song at "its left locator - its count-in - this song's end delay", so the gap is
 //   silent except for the count-in clicks.
@@ -69,12 +71,22 @@ public:
     void play();
     void pause();
     void stop();
+    // Plays the current song from a frame (from the start of bar 1): from "left locator -
+    // count-in" when the frame is the left locator, otherwise from the frame itself.
+    void playFrom (std::int64_t frame);
     // Selects a song (0-based) and puts the transport at its left locator, stopped. When
     // playing, fades out first.
     void selectSong (int songIndex);
 
-    // Bus values: 1-based bus, output channels (second -1 for mono), volumes in dB
-    void setBus (int bus, std::pair<int, int> outputs, double masterVolumeDb, double masterBalance, double metronomeVolumeDb);
+    // Bus values: 1-based bus, output channels (second -1 for mono), volumes in dB; the
+    // metronome is silent in a bus where metronomeOn is false
+    void setBus (int bus, std::pair<int, int> outputs, double masterVolumeDb, double masterBalance, double metronomeVolumeDb,
+                 bool metronomeOn = true);
+
+    // Meters: the highest sample level (linear) since the last call, of a bus's output (after
+    // its master) and of the metronome in it. Any thread. Tracks: MBoxMixState::takePeak().
+    float takeMasterPeak (int bus) noexcept;
+    float takeMetronomePeak (int bus) noexcept;
 
     struct Status
     {
@@ -91,24 +103,27 @@ public:
     void process (const float* const* inputs, int numInputs, float* const* outputs, int numOutputs, int numFrames) noexcept;
 
 private:
-    enum class CommandType { Play, Pause, Stop, SelectSong };
+    enum class CommandType { Play, PlayFrom, Pause, Stop, SelectSong };
 
     struct Command
     {
         CommandType m_type;
         int m_value;
+        std::int64_t m_frame;
     };
 
-    enum class AfterFade { Nothing, Pause, Stop };
+    enum class AfterFade { Nothing, Pause, Stop, PlayFrom };
 
     struct Bus
     {
         std::atomic<int> m_left { -1 }, m_right { -1 };
         std::atomic<float> m_masterGain { 1.0f }, m_masterBalance { 0.0f }, m_metronomeGain { 1.0f };
+        std::atomic<float> m_masterPeak { 0.0f }, m_metronomePeak { 0.0f };
         float m_currentMasterGain { 1.0f };  // audio thread only
     };
 
-    void pushCommand (CommandType type, int value = 0);
+    void pushCommand (CommandType type, int value = 0, std::int64_t frame = 0);
+    void startPlayingFrom (std::int64_t frame) noexcept;
     void takePublishedPlayer() noexcept;
     void handleCommands() noexcept;
     void startFadeOut (AfterFade action) noexcept;
@@ -143,6 +158,7 @@ private:
     float m_gain { 0.0f };
     float m_targetGain { 0.0f };
     AfterFade m_afterFade { AfterFade::Nothing };
+    std::int64_t m_playFromFrame { 0 };
 
     // Status, written by the audio thread
     std::atomic<int> m_reportedState { (int) TransportState::Stopped };

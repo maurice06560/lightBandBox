@@ -4,7 +4,9 @@
 MBoxPluginHost::MBoxPluginHost (const juce::File& pluginListFile)
     : m_pluginListFile (pluginListFile)
 {
-    juce::addHeadlessDefaultFormatsToManager (m_formats);
+    // The formats with editors (not the headless ones), so the UI app can show plugin windows.
+    // The rack app never opens one.
+    juce::addDefaultFormatsToManager (m_formats);
 }
 
 juce::Result MBoxPluginHost::loadPluginList()
