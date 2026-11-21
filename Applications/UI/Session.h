@@ -58,6 +58,10 @@ public:
         // are freed, so their editors can close.
         virtual void sessionPlayerReplaced() {}
 
+        // Selecting a song of another playlist started loading it. Called before the panels
+        // refresh for the new song, so a progress display can show at once.
+        virtual void sessionLoadStarted() {}
+
         // A panel asks the list editor to show a tab and select the entry at a position
         virtual void showInList (ListTab, const Bar&) {}
     };
@@ -171,8 +175,7 @@ public:
     // Whether the click plays in the selected bus at all (rack-wide)
     juce::Result setMetronomeInMix (bool on);
 
-    // The selected song's metronome. Allowed at any time; applies once the library has rebuilt
-    // the playlist (a few seconds when it has plugins).
+    // The selected song's metronome. Allowed at any time, and applied live (no rebuild).
     juce::Result setMetronomeState (MetronomeState state);
 
     // What a song does at its right locator. Allowed at any time, even during playback.

@@ -97,6 +97,68 @@ public:
                 expect (MBoxTest::waitUntil ([&] { return core.getTransportInfo().m_state == "stopped"; }));
             }
 
+            beginTest ("Each song plays its own metronome state when switching songs in a playlist");
+            {
+                expect (core.addPlaylist ("Clicks").wasOk());
+                expect (core.addSong ("Clicks", "A").wasOk());
+                expect (core.addSong ("Clicks", "B").wasOk());
+                core.getSongInstance ("Clicks", "A")->setMetronomeState (MetronomeState::On);
+                expect (core.metronomeChanged ("Clicks", "A").wasOk());
+
+                // The click's peak over a while of playback from the left locator of a song
+                const auto playAndMeasure = [&] (const std::string& song)
+                {
+                    expect (core.selectSong ("Clicks", song).wasOk());
+                    expect (MBoxTest::waitUntil ([&]
+                    {
+                        const auto info = core.getTransportInfo();
+                        return ! info.m_loading && info.m_song == song && info.m_state == "stopped";
+                    }));
+                    expect (core.playFrom ("1.1.1.0").wasOk());
+                    expect (MBoxTest::waitUntil ([&] { return core.getTransportInfo().m_state == "playing"; }));
+                    core.takeMetronomePeak (1);
+
+                    float peak = 0.0f;
+                    MBoxTest::waitUntil ([&] { peak = juce::jmax (peak, core.takeMetronomePeak (1)); return false; }, 1200);
+                    return peak;
+                };
+
+                expectGreaterThan (playAndMeasure ("A"), 0.0f, "A is On");
+                expectEquals (playAndMeasure ("B"), 0.0f, "B is Off");
+                expectGreaterThan (playAndMeasure ("A"), 0.0f, "A is On again");
+
+                // Toggled live on B, then back Off
+                core.getSongInstance ("Clicks", "B")->setMetronomeState (MetronomeState::On);
+                expect (core.metronomeChanged ("Clicks", "B").wasOk());
+                core.getSongInstance ("Clicks", "B")->setMetronomeState (MetronomeState::Off);
+                expect (core.metronomeChanged ("Clicks", "B").wasOk());
+                expectEquals (playAndMeasure ("B"), 0.0f, "B is Off after toggling");
+
+                // Switched off on A while it plays, then A again
+                expectGreaterThan (playAndMeasure ("A"), 0.0f);
+                core.getSongInstance ("Clicks", "A")->setMetronomeState (MetronomeState::Off);
+                expect (core.metronomeChanged ("Clicks", "A").wasOk());
+                expectEquals (playAndMeasure ("B"), 0.0f, "B still Off");
+                expectEquals (playAndMeasure ("A"), 0.0f, "A now Off");
+
+                // Another playlist with the same song names: loading it keeps its own states,
+                // not those of the playlist loaded before
+                expect (core.addPlaylist ("Clicks 2").wasOk());
+                expect (core.addSong ("Clicks 2", "A").wasOk());
+                core.getSongInstance ("Clicks 2", "A")->setMetronomeState (MetronomeState::On);
+                expect (core.metronomeChanged ("Clicks 2", "A").wasOk());
+                expect (core.selectSong ("Clicks 2", "A").wasOk());
+                expect (MBoxTest::waitUntil ([&] { return ! core.getTransportInfo().m_loading && core.getTransportInfo().m_playlist == "Clicks 2"; }));
+                expect (core.playFrom ("1.1.1.0").wasOk());
+                expect (MBoxTest::waitUntil ([&] { return core.getTransportInfo().m_state == "playing"; }));
+                float peak = 0.0f;
+                MBoxTest::waitUntil ([&] { peak = juce::jmax (peak, core.takeMetronomePeak (1)); return false; }, 1200);
+                expectGreaterThan (peak, 0.0f, "A of Clicks 2 is On");
+
+                expect (core.stop().wasOk());
+                expect (MBoxTest::waitUntil ([&] { return core.getTransportInfo().m_state == "stopped"; }));
+            }
+
             beginTest ("effectChanged: needs an existing effect, then marks it for saving");
             {
                 MBoxEffectTarget slot;
@@ -138,7 +200,7 @@ public:
             expect (core.getRig()->m_mixBuses[1].isMetronomeOn());
             expect (! core.getRig()->m_mixBuses[2].isMetronomeOn());
             expectEquals ((int) core.getBanks()[0].m_bankSlots[0].m_effectChain.front().m_state.getSize(), 3);
-            expect (core.getPlaylistNames() == std::vector<std::string> { "Set", "Set copy" });
+            expect (core.getPlaylistNames() == std::vector<std::string> { "Set", "Set copy", "Clicks", "Clicks 2" });
         }
     }
 };

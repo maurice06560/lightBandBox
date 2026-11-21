@@ -4,6 +4,7 @@
 #include "BrowserPanel.h"
 #include "ControlSpaceMonitor.h"
 #include "ListEditorPanel.h"
+#include "LoadingOverlay.h"
 #include "MixerPanel.h"
 #include "PluginWindows.h"
 #include "Session.h"
@@ -16,6 +17,8 @@
         [ browser ][ song arrangement           ][ list editor   ]
         [         ][ mixer                             ][ submixes ]
         [                       status bar                       ]
+
+    While a playlist loads, a modal overlay shows its progress and blocks the rest of the app.
 
     The browser and the editor can be hidden (transport bar toggles, Cmd-1 / Cmd-2); the arrangement
     and the mixer take the room.
@@ -55,6 +58,7 @@ private:
     ListEditorPanel m_editor;
     MixerPanel m_mixer;
     SubmixPanel m_submixes;
+    LoadingOverlay m_loadingOverlay { m_session };   // over everything, while a playlist loads
 
     bool m_browserShown = true;
     bool m_editorShown = true;

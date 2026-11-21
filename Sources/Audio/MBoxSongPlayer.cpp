@@ -73,28 +73,21 @@ namespace
     // right locator when it's On. Beat 1 of each bar and the first count-in click are accented.
     void buildMetronome (const MBoxSong& song, MBoxSongPlayer& player)
     {
-        const auto state = song.getMetronomeState();
-
-        if (state == MetronomeState::Off)
-            return;
-
         const auto& timeline = player.m_timeline;
         const auto leftTicks = timeline.barToTicks (song.getLeftLocator());
         const auto beatLength = timeline.getBeatUnitLengthInFrames (leftTicks);
-        player.m_preRollFrames = (std::int64_t) std::llround (countInBeats * beatLength);
+        player.m_countInFrames = (std::int64_t) std::llround (countInBeats * beatLength);
+        player.m_metronomeState = song.getMetronomeState();
 
         for (int beat = countInBeats; beat >= 1; --beat)
-            player.m_metronomeClicks.push_back ({ player.m_leftFrame - (std::int64_t) std::llround (beat * beatLength),
-                                                  beat == countInBeats });
+            player.m_countInClicks.push_back ({ player.m_leftFrame - (std::int64_t) std::llround (beat * beatLength),
+                                                beat == countInBeats });
 
-        if (state == MetronomeState::On)
-        {
-            timeline.forEachBeatUnit (leftTicks, timeline.barToTicks (song.getRightLocator()),
-                                      [&] (const MBoxTimeline::BeatUnit& beat)
-                                      {
-                                          player.m_metronomeClicks.push_back ({ timeline.ticksToFrames (beat.ticks), beat.beatInBar == 1 });
-                                      });
-        }
+        timeline.forEachBeatUnit (leftTicks, timeline.barToTicks (song.getRightLocator()),
+                                  [&] (const MBoxTimeline::BeatUnit& beat)
+                                  {
+                                      player.m_metronomeClicks.push_back ({ timeline.ticksToFrames (beat.ticks), beat.beatInBar == 1 });
+                                  });
     }
 
     // Info clicks: each entry starts a group of "numerator" clicks one beat-unit apart, using

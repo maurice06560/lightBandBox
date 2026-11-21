@@ -52,6 +52,7 @@ struct MBOX_EXPORT MBoxTransportInfo
     int m_denominator { 4 };
     bool m_loading { false };
     float m_loadingProgress { 0.0f };    // 0 to 1 while loading
+    std::string m_loadingPlaylist;       // the playlist being loaded, empty when not loading
 };
 
 struct MBOX_EXPORT MBoxDeviceInfo
@@ -159,6 +160,8 @@ class MBOX_EXPORT MBoxCoreAudio {
     MBoxRig* getRig();
     MBoxBank* getBanks();  // an array of numberOfBanks banks
     MBoxResult songChanged (const std::string& playlistName, const std::string& songName);
+    // After changing only a song's metronome state: saved and applied live, without a rebuild
+    MBoxResult metronomeChanged (const std::string& playlistName, const std::string& songName);
     MBoxResult rigChanged();
     MBoxResult banksChanged();
     MBoxAudioEngine* getAudioEngine();

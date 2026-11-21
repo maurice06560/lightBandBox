@@ -100,6 +100,7 @@ struct MBoxCoreAudio::Impl final : private juce::Timer
     void startLoad (const juce::String& playlistName, const juce::String& songName, bool reselect);
     void finishLoad (int generation, std::unique_ptr<MBoxPlaylistPlayer> player, const juce::String& error);
     void rebuildIfLoaded (const juce::String& playlistName);
+    void pushMetronomeStates();
     void unloadPlaylist();
     void pushBusToRenderer (int bus);
 
@@ -511,6 +512,7 @@ void MBoxCoreAudio::Impl::finishLoad (int generation, std::unique_ptr<MBoxPlayli
     renderer.publish (std::move (player));
     m_clipCache.retainOnly (files);
     m_loadedPlaylist = playlist->getName();
+    pushMetronomeStates();  // a change made while it was building (needs m_loadedPlaylist set)
 
     const auto songIndex = juce::jmax (0, playlist->getSongIndex (m_loadingSong));
 
@@ -533,6 +535,20 @@ void MBoxCoreAudio::Impl::rebuildIfLoaded (const juce::String& playlistName)
 {
     if (m_loadedPlaylist.isNotEmpty() && m_loadedPlaylist.equalsIgnoreCase (playlistName))
         startLoad (m_loadedPlaylist, m_selectedSong, false);
+}
+
+// The metronome states of the loaded playlist's songs, applied live: no rebuild
+void MBoxCoreAudio::Impl::pushMetronomeStates()
+{
+    auto* player = getRenderer().getPublishedPlayer();
+    auto* playlist = findPlaylist (m_loadedPlaylist);
+
+    if (player == nullptr || playlist == nullptr)
+        return;
+
+    for (auto& runtimeSong : player->m_songs)
+        if (auto* song = playlist->getSongInstance (runtimeSong->m_name))
+            runtimeSong->m_metronomeState = song->getMetronomeState();
 }
 
 // Only reached by removing the loaded playlist (or its last song), a setup operation: the
@@ -1025,6 +1041,16 @@ MBoxResult MBoxCoreAudio::songChanged (const std::string& playlistName, const st
     return MBoxResult::ok();
 }
 
+MBoxResult MBoxCoreAudio::metronomeChanged (const std::string& playlistName, const std::string& songName)
+{
+    if (getSongInstance (playlistName, songName) == nullptr)
+        return MBoxResult::fail ("No song " + songName + " in playlist " + playlistName);
+
+    m_impl->markDirty();
+    m_impl->pushMetronomeStates();
+    return MBoxResult::ok();
+}
+
 MBoxResult MBoxCoreAudio::importAudioFile (const std::string& playlistName, const std::string& songName, int trackId,
                                            const std::string& filePath)
 {
@@ -1152,6 +1178,9 @@ MBoxTransportInfo MBoxCoreAudio::getTransportInfo() const
     info.m_loading = m_impl->m_loading;
     info.m_loadingProgress = m_impl->m_loadProgress;
 
+    if (m_impl->m_loading)
+        info.m_loadingPlaylist = m_impl->m_loadingPlaylist.toStdString();
+
     auto* player = m_impl->getRenderer().getPublishedPlayer();
 
     if (player == nullptr || ! juce::isPositiveAndBelow (status.m_songIndex, (int) player->m_songs.size()))
@@ -1243,9 +1272,7 @@ MBoxResult MBoxCoreAudio::setMetronomeState (const std::string& state)
 
     song->setMetronomeState (metronome);
     m_impl->markDirty();
-
-    // The clicks are computed when the playlist is built
-    m_impl->rebuildIfLoaded (m_impl->m_loadedPlaylist);
+    m_impl->pushMetronomeStates();
     return MBoxResult::ok();
 }
 

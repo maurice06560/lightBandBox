@@ -37,7 +37,8 @@ struct MBoxMixState
 //==============================================================================
 // Everything the audio thread needs to play one song, built from a snapshot of the model by
 // buildPlaylistPlayer(). All positions are frames from the start of bar 1 (44100 Hz).
-// Apart from the mix states, nothing in it changes once it's handed to the audio thread.
+// Apart from the mix states and the metronome state, nothing in it changes once it's handed
+// to the audio thread.
 //==============================================================================
 struct MBoxSongPlayer
 {
@@ -72,13 +73,24 @@ struct MBoxSongPlayer
     MBoxTimeline m_timeline;
     std::int64_t m_leftFrame { 0 };
     std::int64_t m_rightFrame { 0 };
-    std::int64_t m_preRollFrames { 0 };   // count-in length, 0 when the metronome is Off
+    std::int64_t m_countInFrames { 0 };   // count-in length, played unless the metronome is Off
     std::int64_t m_endDelayFrames { 0 };  // silence after the right locator before the next song
     EndSongAction m_endSongAction { EndSongAction::Stop };
-    std::vector<MBoxClickEvent> m_metronomeClicks;  // count-in, then every beat-unit when On
+
+    // Both click lists are always built, so the metronome state can change live (message
+    // thread writes, audio thread reads): the count-in plays unless Off, the beats when On.
+    std::vector<MBoxClickEvent> m_countInClicks;
+    std::vector<MBoxClickEvent> m_metronomeClicks;  // every beat-unit between the locators
+    std::atomic<MetronomeState> m_metronomeState { MetronomeState::Off };
     std::vector<Track> m_tracks;
 
     Track* findTrack (int trackId) noexcept;
+
+    // The count-in played before the left locator: 0 when the metronome is Off
+    std::int64_t getPreRollFrames() const noexcept
+    {
+        return m_metronomeState.load (std::memory_order_relaxed) == MetronomeState::Off ? 0 : m_countInFrames;
+    }
 };
 
 //==============================================================================

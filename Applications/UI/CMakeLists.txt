@@ -21,6 +21,7 @@ target_sources(OneBoxBand
         Main.cpp
         OneBoxBandApplication.cpp
         Session.cpp
+        LoadingOverlay.cpp
         StartupSplash.cpp
         MainComponent.cpp
         TransportBar.cpp

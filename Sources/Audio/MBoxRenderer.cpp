@@ -180,7 +180,7 @@ void MBoxRenderer::handleCommands() noexcept
                 if (m_state == TransportState::Stopped)
                 {
                     const auto& song = *m_active->m_songs[(size_t) m_songIndex];
-                    m_position = song.m_leftFrame - song.m_preRollFrames;
+                    m_position = song.m_leftFrame - song.getPreRollFrames();
                     m_gain = 0.0f;
                 }
 
@@ -251,7 +251,7 @@ void MBoxRenderer::handleCommands() noexcept
 void MBoxRenderer::startPlayingFrom (std::int64_t frame) noexcept
 {
     const auto& song = *m_active->m_songs[(size_t) m_songIndex];
-    m_position = frame == song.m_leftFrame ? frame - song.m_preRollFrames : frame;
+    m_position = frame == song.m_leftFrame ? frame - song.getPreRollFrames() : frame;
     m_gain = 0.0f;
     m_state = TransportState::Playing;
     m_targetGain = 1.0f;
@@ -305,7 +305,7 @@ void MBoxRenderer::handleSongEnd() noexcept
     if (song.m_endSongAction == EndSongAction::Continue && hasNext)
     {
         const auto& next = *m_active->m_songs[(size_t) m_songIndex + 1];
-        m_position = next.m_leftFrame - next.m_preRollFrames - song.m_endDelayFrames;
+        m_position = next.m_leftFrame - next.getPreRollFrames() - song.m_endDelayFrames;
         ++m_songIndex;
     }
     else
@@ -413,8 +413,15 @@ void MBoxRenderer::renderSegment (MBoxSongPlayer& song, const float* const* inpu
     // Metronome, delayed by the playlist latency like every other path
     m_clickBuffer.clear (0, numFrames);
     auto* click = m_clickBuffer.getWritePointer (0);
-    MBoxClickSounds::render (song.m_metronomeClicks, m_clickSounds->getMetronome (false), m_clickSounds->getMetronome (true),
-                             m_position - m_active->m_totalLatency, numFrames, click);
+    const auto metronomeState = song.m_metronomeState.load (std::memory_order_relaxed);
+
+    if (metronomeState != MetronomeState::Off)
+        MBoxClickSounds::render (song.m_countInClicks, m_clickSounds->getMetronome (false), m_clickSounds->getMetronome (true),
+                                 m_position - m_active->m_totalLatency, numFrames, click);
+
+    if (metronomeState == MetronomeState::On)
+        MBoxClickSounds::render (song.m_metronomeClicks, m_clickSounds->getMetronome (false), m_clickSounds->getMetronome (true),
+                                 m_position - m_active->m_totalLatency, numFrames, click);
 
     const auto maxStep = (float) numFrames / (float) m_fadeFrames;
 

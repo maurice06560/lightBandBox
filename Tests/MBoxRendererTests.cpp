@@ -48,6 +48,30 @@ public:
             expectGreaterThan (peak (output, 4 * beat, 2000), peak (output, 5 * beat, 2000) * 1.2f);
         }
 
+        beginTest ("The metronome state changes live, without a rebuild");
+        {
+            MBoxPlaylist playlist ("P");
+            playlist.addSong ("Click");
+            MBoxRenderer renderer;
+            load (renderer, playlist);
+            auto& song = *renderer.getPublishedPlayer()->m_songs[0];
+
+            // Off: no count-in, no clicks
+            renderer.play();
+            expectEquals (peak (MBoxTest::render (renderer, 2 * beat), 0, 2 * beat), 0.0f);
+
+            // On while playing: the beats click from the next block (at 2 and 3 beats)
+            song.m_metronomeState = MetronomeState::On;
+            const auto on = MBoxTest::render (renderer, beat + 100);
+            expectGreaterThan (peak (on, 0, 30), 0.0f);
+            expectEquals (peak (on, 3000, beat - 4000), 0.0f);
+            expectGreaterThan (peak (on, beat, 30), 0.0f);
+
+            // Off again: silent
+            song.m_metronomeState = MetronomeState::Off;
+            expectEquals (peak (MBoxTest::render (renderer, 2 * beat), 0, 2 * beat), 0.0f);
+        }
+
         beginTest ("WAVs start on their exact frame and are cut outside the locators");
         {
             MBoxPlaylist playlist ("P");

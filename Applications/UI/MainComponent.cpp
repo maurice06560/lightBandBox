@@ -18,6 +18,8 @@ MainComponent::MainComponent (Session& session)
     for (auto* c : std::initializer_list<juce::Component*> { &m_transport, &m_browser, &m_arrangement, &m_editor, &m_mixer, &m_submixes })
         addAndMakeVisible (c);
 
+    addChildComponent (m_loadingOverlay);   // last: on top
+
     m_transport.onShowAudioDevice = [this] { showAudioDevice(); };
     m_transport.onShowBanks = [this] { showBanks(); };
     m_transport.onToggleBrowser = [this] { setBrowserShown (! m_browserShown); };
@@ -72,6 +74,8 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::resized()
 {
+    m_loadingOverlay.setBounds (getLocalBounds());
+
     auto area = getLocalBounds();
     m_transport.setBounds (area.removeFromTop (transportHeight));
     area.removeFromBottom (statusHeight);

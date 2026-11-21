@@ -184,6 +184,10 @@ void Session::selectSong (const juce::String& playlist, const juce::String& song
     }
 
     m_transport = m_core.getTransportInfo();
+
+    if (m_transport.m_loading)
+        m_listeners.call ([] (Listener& l) { l.sessionLoadStarted(); });
+
     changed();
 }
 
@@ -523,7 +527,7 @@ juce::Result Session::setMetronomeState (MetronomeState state)
         return juce::Result::fail ("No song selected");
 
     song->setMetronomeState (state);
-    const auto result = toResult (m_core.songChanged (str (m_playlist), str (m_song)));
+    const auto result = toResult (m_core.metronomeChanged (str (m_playlist), str (m_song)));
 
     const auto text = state == MetronomeState::Off               ? juce::String ("off")
                     : state == MetronomeState::FourCountdownOnly ? juce::String ("count-in only")
