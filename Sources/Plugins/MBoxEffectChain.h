@@ -19,7 +19,9 @@
 //
 // Life cycle: create and add plugins on the message thread, then prepare(),
 // setCompensatedLatency() and warmUp() off the audio thread, then process() on the audio
-// thread only. An empty chain is valid (it only applies the compensation delay).
+// thread only. An empty chain is valid (it only applies the compensation delay). It may be
+// destroyed on any thread but the audio thread: off the message thread, its plugins are
+// deleted later on the message thread.
 //==============================================================================
 class MBoxEffectChain
 {

@@ -13,6 +13,28 @@ MBoxEffectChain::MBoxEffectChain (int numChannels)
 
 MBoxEffectChain::~MBoxEffectChain()
 {
+    // A plugin deleted on another thread can deadlock: JUCE's AU instance holds its lock while
+    // it waits for the message thread to dispose of the AU, and the message thread may be in
+    // that AU's parameter callback, waiting for the same lock. So a chain dropped by the loader
+    // (a cancelled or failed build) has its plugins deleted on the message thread, later.
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+
+    if (! m_plugins.empty() && messageManager != nullptr && ! messageManager->isThisTheMessageThread())
+    {
+        auto plugins = std::make_shared<std::vector<std::unique_ptr<Plugin>>> (std::move (m_plugins));
+
+        if (juce::MessageManager::callAsync ([plugins]
+                                             {
+                                                 for (auto& plugin : *plugins)
+                                                     plugin->m_instance->releaseResources();
+
+                                                 plugins->clear();
+                                             }))
+            return;
+
+        m_plugins = std::move (*plugins);  // no message loop any more: delete them here
+    }
+
     for (auto& plugin : m_plugins)
         plugin->m_instance->releaseResources();
 }
