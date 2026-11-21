@@ -97,6 +97,68 @@ public:
             expectEquals (fromMiddle.getSample (0, fade + 10), 0.5f);
         }
 
+        beginTest ("With latency, a song's faded end is heard before the next one, and a start plays no stale audio");
+        {
+            MBoxPlaylist playlist ("P");
+            playlist.addSong ("A");
+            playlist.addSong ("B");
+            auto& a = *playlist.getSongInstance ("A");
+            addAudioTrack (a, wav, { 1, 1, 1, 0 });
+            expect (a.setRightLocator ({ 2, 1, 1, 0 }).wasOk());   // inside the WAV: it's cut there
+            a.setEndSongAction (EndSongAction::Continue);
+            a.setEndSongDelay (0);
+
+            // A playlist padded to 1000 frames, as a latent plugin somewhere would make it
+            constexpr int latency = 1000;
+            const auto banks = createDefaultBanks();
+            const MBoxRig rig;
+            const MBoxPlayerBuildContext context { m_clips, nullptr, banks, rig, 44100.0, MBoxRenderer::maxChunkSize, 0.0, {}, {} };
+            juce::String error;
+            auto player = buildPlaylistPlayer (playlist, context, error);
+            expect (player != nullptr, error);
+            player->m_totalLatency = latency;
+
+            for (auto& song : player->m_songs)
+                for (auto& track : song->m_tracks)
+                    for (auto& inserts : track.m_inserts)
+                        inserts->setCompensatedLatency (latency);
+
+            MBoxRenderer renderer;
+            renderer.publish (std::move (player));
+            MBoxTest::render (renderer, 1);
+
+            renderer.play();
+            const auto output = MBoxTest::render (renderer, bar + latency + 2000);
+
+            // Heard latency frames late, faded out up to the right locator, then song B
+            expectEquals (output.getSample (0, latency + 1000), 0.5f);
+            expectEquals (output.getSample (0, bar + latency - 500), 0.5f, "the end still in the delay is heard");
+            expectLessThan (std::abs (output.getSample (0, bar + latency - 1)), 0.01f);
+            expectEquals (peak (output, bar + latency, 2000), 0.0f);
+            expectEquals (renderer.getStatus().m_songIndex, 1);
+
+            float largestStep = 0.0f;
+
+            for (int i = 1; i < output.getNumSamples(); ++i)
+                largestStep = juce::jmax (largestStep, std::abs (output.getSample (0, i) - output.getSample (0, i - 1)));
+
+            expectLessThan (largestStep, 0.01f, "no jump in the signal");
+
+            // Stopped in the middle of A, then played again: the delays held A's audio
+            renderer.stop();
+            MBoxTest::render (renderer, 2000);
+            renderer.selectSong (0);
+            MBoxTest::render (renderer, 1);
+            expectEquals (renderer.getStatus().m_songIndex, 0);
+            renderer.play();
+            expectEquals (MBoxTest::render (renderer, bar / 2).getSample (0, bar / 2 - 1), 0.5f);
+            renderer.stop();
+            MBoxTest::render (renderer, 2000);
+            renderer.play();
+            const auto restart = MBoxTest::render (renderer, latency + 1000);
+            expectLessThan (peak (restart, 0, latency), 0.01f, "no stale audio at the start");
+        }
+
         beginTest ("Pause fades out and keeps the position; play resumes from it");
         {
             MBoxPlaylist playlist ("P");

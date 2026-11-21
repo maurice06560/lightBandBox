@@ -26,9 +26,12 @@
 //   to the left locator. play() after a pause fades back in from where it stopped.
 // - playFrom() starts at any position (with the count-in only when it's the left locator);
 //   while playing, it fades out first, then jumps.
+// - WAVs fade in over 10 ms from the left locator and out over 10 ms up to the right one.
 // - At the right locator: Stop (or the last song) fades out and stops; Continue jumps to the
 //   next song at "its left locator - its count-in - this song's end delay", so the gap is
-//   silent except for the count-in clicks.
+//   silent except for the count-in clicks. What is heard lags the position by the playlist
+//   latency, so this happens once the right locator has been heard, latency included.
+// - A start or a song change empties the compensation delays, so no stale audio sounds.
 // - Live inputs only sound while playing.
 //
 // Signal path, per block, for the current song:
@@ -129,6 +132,8 @@ private:
     void startFadeOut (AfterFade action) noexcept;
     void finishFadeOut() noexcept;
     void handleSongEnd() noexcept;
+    std::int64_t getSongEndFrame (const MBoxSongPlayer& song) const noexcept;
+    void clearDelays (const MBoxSongPlayer& song, bool tracks, bool liveInputs) noexcept;
 
     void processChunk (const float* const* inputs, int numInputs, float* const* outputs, int numOutputs,
                        int offset, int numFrames) noexcept;

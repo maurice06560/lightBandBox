@@ -35,6 +35,8 @@ public:
     // be prepared (their latency is only known after MBoxEffectChain::prepare). Off the audio thread.
     void prepare (double sampleRate, int maxBlockSize, int totalLatency);
     void warmUp (double seconds);
+    // Audio thread: empties every chain's compensation delay (see MBoxEffectChain::clearDelay)
+    void clearDelays() noexcept;
 
     // Audio thread. Processes the mono signal in place with the chain of the given slot
     // (the dry chain when the slot is empty or has no chain here).

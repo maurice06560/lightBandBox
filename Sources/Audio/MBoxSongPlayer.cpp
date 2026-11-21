@@ -131,6 +131,11 @@ namespace
     // How buildSong gets its chains and live inputs
     struct SongBuild
     {
+        SongBuild (std::map<std::pair<int, int>, std::shared_ptr<MBoxLiveInput>>& liveInputs, const MBoxSongPlayer* previous = nullptr)
+            : m_liveInputs (liveInputs), m_previous (previous)
+        {
+        }
+
         std::map<std::pair<int, int>, std::shared_ptr<MBoxLiveInput>>& m_liveInputs;
         const MBoxSongPlayer* m_previous { nullptr };  // a single-song rebuild: the running song, to reuse from
         std::vector<MBoxEffectChain*> m_newInserts;    // created by this build, still to prepare
@@ -301,7 +306,7 @@ std::unique_ptr<MBoxPlaylistPlayer> buildPlaylistPlayer (const MBoxPlaylist& pla
     auto playlistPlayer = std::make_unique<MBoxPlaylistPlayer>();
     playlistPlayer->m_playlistName = playlist.getName();
 
-    SongBuild build { playlistPlayer->m_liveInputs };
+    SongBuild build (playlistPlayer->m_liveInputs);
     const auto& songs = playlist.getSongs();
 
     for (size_t songIndex = 0; songIndex < songs.size(); ++songIndex)
@@ -409,7 +414,7 @@ std::unique_ptr<MBoxPlaylistPlayer> rebuildSongPlayer (const MBoxPlaylist& playl
     auto playlistPlayer = std::make_unique<MBoxPlaylistPlayer> (std::move (base));
     playlistPlayer->m_generation = 0;
 
-    SongBuild build { playlistPlayer->m_liveInputs, playlistPlayer->m_songs[(size_t) songIndex].get() };
+    SongBuild build (playlistPlayer->m_liveInputs, playlistPlayer->m_songs[(size_t) songIndex].get());
     auto player = buildSong (*songs[(size_t) songIndex], context, build, error);
 
     if (player == nullptr)

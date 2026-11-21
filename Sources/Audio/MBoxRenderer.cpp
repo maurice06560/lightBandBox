@@ -182,6 +182,12 @@ void MBoxRenderer::handleCommands() noexcept
                     const auto& song = *m_active->m_songs[(size_t) m_songIndex];
                     m_position = song.m_leftFrame - song.getPreRollFrames();
                     m_gain = 0.0f;
+                    clearDelays (song, true, true);
+                }
+                else if (m_state == TransportState::Paused)
+                {
+                    // The song resumes where it paused; the live inputs' delayed audio is old
+                    clearDelays (*m_active->m_songs[(size_t) m_songIndex], false, true);
                 }
 
                 m_state = TransportState::Playing;
@@ -256,6 +262,30 @@ void MBoxRenderer::startPlayingFrom (std::int64_t frame) noexcept
     m_state = TransportState::Playing;
     m_targetGain = 1.0f;
     m_afterFade = AfterFade::Nothing;
+    clearDelays (song, true, true);
+}
+
+// Every path is delayed by the playlist latency, so what is heard lags m_position by it: the
+// song ends once its right locator has been heard (its 10 ms fade-out included), not when
+// m_position reaches it, which would cut the end still in the delay lines.
+std::int64_t MBoxRenderer::getSongEndFrame (const MBoxSongPlayer& song) const noexcept
+{
+    return song.m_rightFrame + m_active->m_totalLatency;
+}
+
+// After the playhead jumped, the compensation delays hold audio from elsewhere (the song's
+// last stop, or its previous play); they would sound before the new audio comes through.
+void MBoxRenderer::clearDelays (const MBoxSongPlayer& song, bool tracks, bool liveInputs) noexcept
+{
+    for (const auto& track : song.m_tracks)
+    {
+        if (tracks)
+            for (const auto& inserts : track.m_inserts)
+                inserts->clearDelay();
+
+        if (liveInputs && track.m_liveInput != nullptr)
+            track.m_liveInput->clearDelays();
+    }
 }
 
 void MBoxRenderer::startFadeOut (AfterFade action) noexcept
@@ -296,7 +326,7 @@ void MBoxRenderer::finishFadeOut() noexcept
     m_afterFade = AfterFade::Nothing;
 }
 
-// The playhead reached the right locator
+// The right locator has been heard (see getSongEndFrame)
 void MBoxRenderer::handleSongEnd() noexcept
 {
     const auto& song = *m_active->m_songs[(size_t) m_songIndex];
@@ -307,6 +337,7 @@ void MBoxRenderer::handleSongEnd() noexcept
         const auto& next = *m_active->m_songs[(size_t) m_songIndex + 1];
         m_position = next.m_leftFrame - next.getPreRollFrames() - song.m_endDelayFrames;
         ++m_songIndex;
+        clearDelays (next, true, false);   // the live inputs carry on
     }
     else
     {
@@ -334,7 +365,7 @@ void MBoxRenderer::process (const float* const* inputs, int numInputs, float* co
     m_reportedPosition = m_position;
 }
 
-// Splits a chunk at the right locator, so the song end is handled on the exact frame
+// Splits a chunk at the song end (the right locator, heard), so it is handled on the exact frame
 void MBoxRenderer::processChunk (const float* const* inputs, int numInputs, float* const* outputs, int numOutputs,
                                  int offset, int numFrames) noexcept
 {
@@ -345,7 +376,9 @@ void MBoxRenderer::processChunk (const float* const* inputs, int numInputs, floa
 
         auto& song = *m_active->m_songs[(size_t) m_songIndex];
 
-        if (m_position >= song.m_rightFrame && m_targetGain > 0.0f)
+        const auto endFrame = getSongEndFrame (song);
+
+        if (m_position >= endFrame && m_targetGain > 0.0f)
         {
             handleSongEnd();
             continue;
@@ -353,8 +386,8 @@ void MBoxRenderer::processChunk (const float* const* inputs, int numInputs, floa
 
         auto segment = numFrames;
 
-        if (m_position < song.m_rightFrame)
-            segment = (int) juce::jmin ((std::int64_t) numFrames, song.m_rightFrame - m_position);
+        if (m_position < endFrame)
+            segment = (int) juce::jmin ((std::int64_t) numFrames, endFrame - m_position);
 
         renderSegment (song, inputs, numInputs, outputs, numOutputs, offset, segment);
         applyTransportGain (outputs, numOutputs, offset, segment);

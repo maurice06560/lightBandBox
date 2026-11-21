@@ -65,6 +65,12 @@ void MBoxLiveInput::prepare (double sampleRate, int maxBlockSize, int totalLaten
     }
 }
 
+void MBoxLiveInput::clearDelays() noexcept
+{
+    for (auto& entry : m_entries)
+        entry.m_chain->clearDelay();
+}
+
 void MBoxLiveInput::warmUp (double seconds)
 {
     for (auto& entry : m_entries)

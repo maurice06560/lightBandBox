@@ -48,6 +48,9 @@ public:
 
     // Adds a delay so the chain's total latency is totalLatency. Call after prepare().
     void setCompensatedLatency (int totalLatency);
+    // Audio thread: empties the compensation delay, whose audio is stale after the playhead
+    // jumped (a start, a new song). The plugins' own latency buffers are left as they are.
+    void clearDelay() noexcept;
 
     // Processes a few seconds of silence, so plugins that initialise lazily (loading impulse
     // responses or models, allocating on first use) do it now rather than on first use live.

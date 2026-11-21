@@ -138,6 +138,12 @@ void MBoxEffectChain::setCompensatedLatency (int totalLatency)
     m_delay.clear();
 }
 
+void MBoxEffectChain::clearDelay() noexcept
+{
+    m_delay.clear();
+    m_delayPosition = 0;
+}
+
 void MBoxEffectChain::warmUp (double seconds)
 {
     if (m_plugins.empty() || m_maxBlockSize <= 0)
